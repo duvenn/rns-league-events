@@ -74,6 +74,18 @@ async function remoteSet(key, value) {
   if (!res.ok) throw new Error('Save failed');
   return { key, value };
 }
+async function remoteRpc(fn, args) {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/rpc/${fn}`, {
+    method: 'POST',
+    headers: {
+      apikey: SUPABASE_ANON_KEY,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(args),
+  });
+  if (!res.ok) throw new Error('Save failed');
+  return true;
+}
 function localGet(key) {
   const raw = window.localStorage.getItem(LOCAL_PREFIX + key);
   if (raw === null) throw new Error('Not found');
@@ -83,9 +95,33 @@ function localSet(key, value) {
   window.localStorage.setItem(LOCAL_PREFIX + key, value);
   return { key, value };
 }
+function localSignups() {
+  try { return JSON.parse(localGet('signups').value) || []; } catch { return []; }
+}
 const storage = {
   async get(key) { return REMOTE_ENABLED ? remoteGet(key) : localGet(key); },
   async set(key, value) { return REMOTE_ENABLED ? remoteSet(key, value) : localSet(key, value); },
+  /* Signups are the one thing lots of people write at the same time, so they
+     don't go through set() — that rewrites the whole array from whatever this
+     browser loaded on page open, which meant two players submitting from
+     separately-loaded pages silently overwrote each other. These two go
+     through Postgres functions that mutate the stored array in a single
+     statement, so concurrent writers queue up instead of clobbering.
+     Demo mode has one browser and no concurrency, so it just edits in place. */
+  async appendSignup(signup) {
+    if (!REMOTE_ENABLED) {
+      localSet('signups', JSON.stringify([...localSignups(), signup]));
+      return true;
+    }
+    return remoteRpc('append_signup', { new_signup: signup });
+  },
+  async updateSignupStatus(id, status) {
+    if (!REMOTE_ENABLED) {
+      localSet('signups', JSON.stringify(localSignups().map(s => (s.id === id ? { ...s, status } : s))));
+      return true;
+    }
+    return remoteRpc('set_signup_status', { signup_id: id, new_status: status });
+  },
 };
 
 /* ============ DESIGN TOKENS ============ */
@@ -1666,6 +1702,10 @@ function App() {
     }
   };
 
+  const refreshSignups = async () => {
+    setSignups(await safeGet(STORAGE_KEYS.SIGNUPS));
+  };
+
   const refreshData = async (showSpinner) => {
     if (showSpinner) setRefreshing(true);
     const [ev, su, ha] = await Promise.all([
@@ -1736,10 +1776,19 @@ function App() {
       status: 'pending',
       submittedAt: new Date().toISOString(),
     };
-    const ok = await persist(STORAGE_KEYS.SIGNUPS, [...signups, newSignup], setSignups);
+    try {
+      await storage.appendSignup(newSignup);
+    } catch {
+      setSubmittingSignup(false);
+      pushToast('Could not save your signup. Check your connection and try again.', 'error');
+      return false;
+    }
+    /* Pull the list back down rather than appending locally — this page may
+       have been open a while, and the server copy is the real one now. */
+    await refreshSignups();
     setSubmittingSignup(false);
-    if (ok) pushToast("You're on the board!");
-    return ok;
+    pushToast("You're on the board!");
+    return true;
   };
 
   const loginHandler = async (username, password) => {
@@ -1787,7 +1836,11 @@ function App() {
     const ok = await persist(STORAGE_KEYS.EVENTS, events.filter(e => e.id !== id), setEvents);
     if (ok) {
       pushToast('Event deleted.');
-      persist(STORAGE_KEYS.SIGNUPS, signups.filter(s => s.eventId !== id), setSignups);
+      /* This one genuinely has to rewrite the whole list, so read the current
+         copy first — otherwise it would roll back any signup that arrived
+         after this dashboard was loaded. */
+      const current = await safeGet(STORAGE_KEYS.SIGNUPS);
+      await persist(STORAGE_KEYS.SIGNUPS, current.filter(s => s.eventId !== id), setSignups);
     }
   };
 
@@ -1797,8 +1850,19 @@ function App() {
   };
 
   const setSignupStatus = async (id, status) => {
-    const updated = signups.map(s => s.id === id ? { ...s, status } : s);
-    await persist(STORAGE_KEYS.SIGNUPS, updated, setSignups);
+    /* Update locally first so review mode stays snappy, then confirm against
+       the server. A stale list can no longer wipe out other people's signups —
+       only this one record is touched. */
+    const previous = signups;
+    setSignups(signups.map(s => (s.id === id ? { ...s, status } : s)));
+    try {
+      await storage.updateSignupStatus(id, status);
+    } catch {
+      setSignups(previous);
+      pushToast('Could not save that. Check your connection and try again.', 'error');
+      return;
+    }
+    await refreshSignups();
   };
 
   const assignTeamsForEvent = async (eventId, numTeamsInput) => {
