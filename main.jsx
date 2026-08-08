@@ -151,7 +151,7 @@ const C = {
 // {username, passwordHash} pairs — no public sign-up, no plaintext passwords
 // in this file. To add a handler, hash their password with hashPassword()
 // below and insert it into that row, or ask Claude to do it.
-const BUILD = 'build 2026-08-08d';
+const BUILD = 'build 2026-08-08e';
 const STORAGE_KEYS = { EVENTS: 'events', SIGNUPS: 'signups', HANDLERS: 'handlers' };
 
 async function hashPassword(username, password) {
@@ -1221,6 +1221,25 @@ function HandlerAuth({ onLogin, busy }) {
 /* ============ EVENT FORM (CREATE / EDIT) ============ */
 /* ============ QUESTION BUILDER PARTS ============ */
 
+/* An actual checkbox. The first version of this was small grey text with a
+   plus icon, which read as "add something" rather than a setting you switch. */
+function CheckToggle({ on, onToggle, label, hint }) {
+  return (
+    <button type="button" onClick={onToggle}
+      className="w-full flex items-start gap-2.5 px-3 py-2.5 rounded-lg border text-left transition"
+      style={{ borderColor: on ? C.rim : C.line, background: on ? 'rgba(229,38,44,0.07)' : C.panel }}>
+      <span className="w-4 h-4 rounded flex items-center justify-center shrink-0 border mt-0.5"
+        style={{ borderColor: on ? C.rim : C.paintDim, background: on ? C.rim : 'transparent' }}>
+        {on && <Check size={11} color={C.onRim} />}
+      </span>
+      <span className="min-w-0">
+        <span className="text-xs block" style={{ color: C.paint }}>{label}</span>
+        {hint && <span className="text-xs block mt-0.5" style={{ color: C.paintDim }}>{hint}</span>}
+      </span>
+    </button>
+  );
+}
+
 /* Add/remove the answer options for a multiple-choice question. The draft is
    controlled by the parent so a typed-but-not-added answer isn't stranded here
    when the handler moves on — the parent commits it for them. */
@@ -1266,10 +1285,6 @@ function FollowUpEditor({ followUp, onChange, onRemove }) {
       </div>
       {followUp.type === 'choice' && (
         <div className="space-y-1.5">
-          <button type="button" onClick={() => onChange({ ...followUp, unique: !followUp.unique })}
-            className="flex items-center gap-1.5 text-xs" style={{ color: followUp.unique ? C.rim : C.paintDim }}>
-            {followUp.unique ? <Check size={13} /> : <Plus size={13} />} Each option can only be taken once
-          </button>
           {followUp.choices.length > 0 && (
             <div className="flex flex-wrap gap-1.5">
               {followUp.choices.map(c => (
@@ -1286,6 +1301,9 @@ function FollowUpEditor({ followUp, onChange, onRemove }) {
             onAdd={(v) => followUp.choices.includes(v) || onChange({ ...followUp, choices: [...followUp.choices, v], draft: '' })}
             placeholder="Add an option they can pick"
           />
+          <CheckToggle on={!!followUp.unique} onToggle={() => onChange({ ...followUp, unique: !followUp.unique })}
+            label="Each option can only be taken once"
+            hint="Taken off the list once the player who picked it is accepted." />
         </div>
       )}
     </div>
@@ -1541,18 +1559,17 @@ function EventForm({ initial, onSave, onCancel, busy }) {
                 />
               ))}
               {newQType === 'choice' && (
-                <button type="button" onClick={() => setNewQUnique(v => !v)} className="flex items-center gap-1.5 text-xs"
-                  style={{ color: newQUnique ? C.rim : C.paintDim }}>
-                  {newQUnique ? <Check size={13} /> : <Plus size={13} />} Each answer can only be taken once
-                </button>
-              )}
-              {newQType === 'choice' && (
                 <ChoiceListEditor
                   draft={answerDraft}
                   onDraftChange={setAnswerDraft}
                   onAdd={addAnswer}
                   placeholder="Add an answer, e.g. Lakers"
                 />
+              )}
+              {newQType === 'choice' && (
+                <CheckToggle on={newQUnique} onToggle={() => setNewQUnique(v => !v)}
+                  label="Each answer can only be taken once"
+                  hint="Taken off the list once the player who picked it is accepted." />
               )}
             </div>
           )}
