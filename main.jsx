@@ -151,6 +151,7 @@ const C = {
 // {username, passwordHash} pairs — no public sign-up, no plaintext passwords
 // in this file. To add a handler, hash their password with hashPassword()
 // below and insert it into that row, or ask Claude to do it.
+const BUILD = 'build 2026-08-08d';
 const STORAGE_KEYS = { EVENTS: 'events', SIGNUPS: 'signups', HANDLERS: 'handlers' };
 
 async function hashPassword(username, password) {
@@ -169,6 +170,14 @@ const PLAYSTYLES = [
   { value: 'twoway', label: 'Two-Way Glue Guy', desc: 'Does a bit of everything', icon: RefreshCw },
 ];
 
+/* The built-in questions a handler can switch off per event. Everything reads
+   `!== false` so events created before a toggle existed keep asking it. */
+const SIGNUP_FIELDS = [
+  { key: 'askPosition', label: 'Ask Position' },
+  { key: 'askPlaystyle', label: 'Ask Playstyle' },
+  { key: 'askPassing', label: 'Ask Passing' },
+  { key: 'askComp', label: 'Ask Comp Experience' },
+];
 const POSITIONS = ['Point Guard', 'Shooting Guard', 'Small Forward', 'Power Forward', 'Center', 'Flex / Any'];
 
 const PASSING_SCALE = [
@@ -664,8 +673,8 @@ function PlayerCard({ data, compact = false, actions = null, questions = [], onO
           </div>
           {data.position && <div className="text-sm" style={{ color: C.paintDim }}>{data.position}</div>}
         </div>
-        <StatBar label="PASSING" value={passing ? passing.value : null} max={5} />
-        <StatBar label="COMP EXP" value={comp ? comp.value : null} max={4} />
+        {passing && <StatBar label="PASSING" value={passing.value} max={5} />}
+        {comp && <StatBar label="COMP EXP" value={comp.value} max={4} />}
         {data.availability && data.availability.length > 0 && (
           <div className="flex flex-wrap gap-1">
             {data.availability.map(d => (
@@ -856,6 +865,10 @@ function Footer() {
     <footer className="px-4 sm:px-6 py-10 border-t text-center" style={{ borderColor: C.line }}>
       <div className="font-display text-lg uppercase mb-1" style={{ color: C.paintDim }}>RNS's League &amp; Events</div>
       <p className="text-xs" style={{ color: C.paintDim }}>A community-run hub for Practical Basketball players.</p>
+      {/* So you can tell at a glance which build the browser actually loaded —
+          static files get cached hard, and a stale main.jsx looks identical to
+          a broken new one. */}
+      <p className="text-xs font-mono2 mt-2" style={{ color: C.paintDim, opacity: 0.7 }}>{BUILD}</p>
     </footer>
   );
 }
@@ -945,6 +958,8 @@ function SignupFlow({ openEvents, initialEventId, onSubmit, onCancel, submitting
   };
   const askPosition = !selectedEvent || selectedEvent.askPosition !== false;
   const askPlaystyle = !selectedEvent || selectedEvent.askPlaystyle !== false;
+  const askPassing = !selectedEvent || selectedEvent.askPassing !== false;
+  const askComp = !selectedEvent || selectedEvent.askComp !== false;
   const setCustomAnswer = (key, val) => setForm(f => ({ ...f, customAnswers: { ...f.customAnswers, [key]: val } }));
 
   /* Picking a different answer swaps in a different follow-up, so the old
@@ -963,12 +978,12 @@ function SignupFlow({ openEvents, initialEventId, onSubmit, onCancel, submitting
     }));
   };
 
-  const steps = ['Pick An Event', 'The Basics', 'Scouting Report'];
+  const steps = ['Pick An Event', 'The Basics', (askPassing || askComp) ? 'Scouting Report' : 'A Few More Things'];
 
   const canProceed = () => {
     if (step === 0) return !!form.eventId;
     if (step === 1) return !!(form.robloxUsername.trim() && (!askPosition || form.position) && (!askPlaystyle || form.playstyle));
-    if (step === 2) return !!(form.passing && form.comp);
+    if (step === 2) return !!((!askPassing || form.passing) && (!askComp || form.comp));
     return true;
   };
 
@@ -1074,15 +1089,19 @@ function SignupFlow({ openEvents, initialEventId, onSubmit, onCancel, submitting
             )}
             {step === 2 && (
               <div className="space-y-6">
-                <h2 className="font-display text-2xl uppercase mb-1" style={{ color: C.paint }}>Scouting Report</h2>
-                <div>
-                  <label className="text-xs font-mono2 uppercase tracking-wide block mb-1.5" style={{ color: C.paintDim }}>Passing</label>
-                  <TilePicker options={PASSING_SCALE} value={form.passing} onChange={v => set('passing', v)} />
-                </div>
-                <div>
-                  <label className="text-xs font-mono2 uppercase tracking-wide block mb-1.5" style={{ color: C.paintDim }}>Competitive Experience</label>
-                  <TilePicker options={COMP_LEVELS} value={form.comp} onChange={v => set('comp', v)} />
-                </div>
+                <h2 className="font-display text-2xl uppercase mb-1" style={{ color: C.paint }}>{steps[2]}</h2>
+                {askPassing && (
+                  <div>
+                    <label className="text-xs font-mono2 uppercase tracking-wide block mb-1.5" style={{ color: C.paintDim }}>Passing</label>
+                    <TilePicker options={PASSING_SCALE} value={form.passing} onChange={v => set('passing', v)} />
+                  </div>
+                )}
+                {askComp && (
+                  <div>
+                    <label className="text-xs font-mono2 uppercase tracking-wide block mb-1.5" style={{ color: C.paintDim }}>Competitive Experience</label>
+                    <TilePicker options={COMP_LEVELS} value={form.comp} onChange={v => set('comp', v)} />
+                  </div>
+                )}
                 {eventQuestions.length > 0 && (
                   <div className="space-y-4 pt-1 pb-1 border-t border-b" style={{ borderColor: C.line }}>
                     <div className="text-xs font-mono2 uppercase tracking-wide pt-4" style={{ color: C.rim }}>From The Event Handler</div>
@@ -1300,7 +1319,7 @@ function AnswerRow({ answer, fixed, onRemove, onFollowUpChange }) {
 }
 
 function EventForm({ initial, onSave, onCancel, busy }) {
-  const [f, setF] = useState(initial || { title: '', date: '', time: '', location: '', capacity: '', description: '', photo: '', questions: [], askPosition: true, askPlaystyle: true });
+  const [f, setF] = useState(initial || { title: '', date: '', time: '', location: '', capacity: '', description: '', photo: '', questions: [], askPosition: true, askPlaystyle: true, askPassing: true, askComp: true });
   const [newQText, setNewQText] = useState('');
   const [newQType, setNewQType] = useState('text');
   /* One row per possible answer: { value, label, followUp }. Yes/No fills this
@@ -1451,12 +1470,16 @@ function EventForm({ initial, onSave, onCancel, busy }) {
       <div>
         <label className="text-xs font-mono2 uppercase tracking-wide block mb-1.5" style={{ color: C.paintDim }}>Signup Fields</label>
         <div className="flex flex-wrap gap-2">
-          <button type="button" onClick={() => set('askPosition', !f.askPosition)} className="flex items-center gap-1.5 px-3 py-2 rounded-lg border text-sm transition" style={{ borderColor: f.askPosition ? C.rim : C.line, background: f.askPosition ? 'rgba(229,38,44,0.1)' : 'transparent', color: f.askPosition ? C.paint : C.paintDim }}>
-            {f.askPosition ? <Check size={14} /> : <X size={14} />} Ask Position
-          </button>
-          <button type="button" onClick={() => set('askPlaystyle', !f.askPlaystyle)} className="flex items-center gap-1.5 px-3 py-2 rounded-lg border text-sm transition" style={{ borderColor: f.askPlaystyle ? C.rim : C.line, background: f.askPlaystyle ? 'rgba(229,38,44,0.1)' : 'transparent', color: f.askPlaystyle ? C.paint : C.paintDim }}>
-            {f.askPlaystyle ? <Check size={14} /> : <X size={14} />} Ask Playstyle
-          </button>
+          {SIGNUP_FIELDS.map(fld => {
+            const on = f[fld.key] !== false;
+            return (
+              <button key={fld.key} type="button" onClick={() => set(fld.key, !on)}
+                className="flex items-center gap-1.5 px-3 py-2 rounded-lg border text-sm transition"
+                style={{ borderColor: on ? C.rim : C.line, background: on ? 'rgba(229,38,44,0.1)' : 'transparent', color: on ? C.paint : C.paintDim }}>
+                {on ? <Check size={14} /> : <X size={14} />} {fld.label}
+              </button>
+            );
+          })}
         </div>
       </div>
       <div>
@@ -1641,14 +1664,18 @@ function ApplicantDetail({ applicant, event, accepted, index, total, onPrev, onN
           {(passing || comp) && (
           <DetailSection label="Scouting Report">
             <div className="space-y-3">
-              <div>
-                <StatBar label="PASSING" value={passing ? passing.value : null} max={5} />
-                <div className="text-xs mt-1" style={{ color: C.paint }}>{passing ? passing.label : 'Not answered'}</div>
-              </div>
-              <div>
-                <StatBar label="COMP EXP" value={comp ? comp.value : null} max={4} />
-                <div className="text-xs mt-1" style={{ color: C.paint }}>{comp ? comp.label : 'Not answered'}</div>
-              </div>
+              {passing && (
+                <div>
+                  <StatBar label="PASSING" value={passing.value} max={5} />
+                  <div className="text-xs mt-1" style={{ color: C.paint }}>{passing.label}</div>
+                </div>
+              )}
+              {comp && (
+                <div>
+                  <StatBar label="COMP EXP" value={comp.value} max={4} />
+                  <div className="text-xs mt-1" style={{ color: C.paint }}>{comp.label}</div>
+                </div>
+              )}
             </div>
           </DetailSection>
           )}
@@ -1824,7 +1851,7 @@ function EventManagerRow({ event, applicants, accepted, rejected, signupsById, o
   }, [confirmDelete]);
 
   if (editing) {
-    return <EventForm initial={{ ...event, capacity: event.capacity || '', questions: normalizeQuestions(event.questions), askPosition: event.askPosition !== false, askPlaystyle: event.askPlaystyle !== false }} onSave={(f) => { onEdit(event.id, f); setEditing(false); }} onCancel={() => setEditing(false)} />;
+    return <EventForm initial={{ ...event, capacity: event.capacity || '', questions: normalizeQuestions(event.questions), askPosition: event.askPosition !== false, askPlaystyle: event.askPlaystyle !== false, askPassing: event.askPassing !== false, askComp: event.askComp !== false }} onSave={(f) => { onEdit(event.id, f); setEditing(false); }} onCancel={() => setEditing(false)} />;
   }
 
   return (
@@ -2192,6 +2219,8 @@ function App() {
       questions: f.questions || [],
       askPosition: f.askPosition !== false,
       askPlaystyle: f.askPlaystyle !== false,
+      askPassing: f.askPassing !== false,
+      askComp: f.askComp !== false,
       status: 'open',
       teams: null,
       createdBy: session ? session.username : 'staff',
@@ -2203,7 +2232,7 @@ function App() {
   };
 
   const editEvent = async (id, f) => {
-    const updated = events.map(e => e.id === id ? { ...e, title: f.title.trim(), date: f.date, time: f.time, location: f.location.trim(), capacity: f.capacity ? Number(f.capacity) : null, description: f.description.trim(), photo: f.photo || '', questions: f.questions || [], askPosition: f.askPosition !== false, askPlaystyle: f.askPlaystyle !== false } : e);
+    const updated = events.map(e => e.id === id ? { ...e, title: f.title.trim(), date: f.date, time: f.time, location: f.location.trim(), capacity: f.capacity ? Number(f.capacity) : null, description: f.description.trim(), photo: f.photo || '', questions: f.questions || [], askPosition: f.askPosition !== false, askPlaystyle: f.askPlaystyle !== false, askPassing: f.askPassing !== false, askComp: f.askComp !== false } : e);
     const ok = await persist(STORAGE_KEYS.EVENTS, updated, setEvents);
     if (ok) pushToast('Event updated.');
   };
