@@ -151,7 +151,7 @@ const C = {
 // {username, passwordHash} pairs — no public sign-up, no plaintext passwords
 // in this file. To add a handler, hash their password with hashPassword()
 // below and insert it into that row, or ask Claude to do it.
-const BUILD = 'build 2026-08-08e';
+const BUILD = 'build 2026-08-08f';
 const STORAGE_KEYS = { EVENTS: 'events', SIGNUPS: 'signups', HANDLERS: 'handlers' };
 
 async function hashPassword(username, password) {
@@ -1129,9 +1129,9 @@ function SignupFlow({ openEvents, initialEventId, onSubmit, onCancel, submitting
                               {followUp.type === 'choice' ? (
                                 openChoices(followUpKey, followUp.choices).length > 0 ? (
                                   <TilePicker options={openChoices(followUpKey, followUp.choices).map(c => ({ value: c, label: c }))} value={form.customAnswers[followUpKey]} onChange={v => setCustomAnswer(followUpKey, v)} columns={2} />
-                                ) : (
+                                ) : followUp.choices.length > 0 ? (
                                   <div className="text-sm rounded-lg px-4 py-3 border" style={{ borderColor: C.line, color: C.paintDim }}>Everyone here is already taken — try another pick above.</div>
-                                )
+                                ) : null
                               ) : (
                                 <input value={form.customAnswers[followUpKey] || ''} onChange={e => setCustomAnswer(followUpKey, e.target.value)} className="w-full rounded-lg px-4 py-3 border" style={{ background: C.panel, borderColor: C.line, color: C.paint }} />
                               )}
@@ -1246,8 +1246,8 @@ function CheckToggle({ on, onToggle, label, hint }) {
 function ChoiceListEditor({ draft, onDraftChange, onAdd, placeholder }) {
   const commit = () => {
     const v = draft.trim();
-    if (v) onAdd(v);
-    onDraftChange('');
+    if (!v) return;
+    onAdd(v); // the parent clears the draft in the SAME update — see below
   };
   return (
     <div className="flex gap-2">
@@ -1298,7 +1298,7 @@ function FollowUpEditor({ followUp, onChange, onRemove }) {
           <ChoiceListEditor
             draft={followUp.draft || ''}
             onDraftChange={(v) => onChange({ ...followUp, draft: v })}
-            onAdd={(v) => followUp.choices.includes(v) || onChange({ ...followUp, choices: [...followUp.choices, v], draft: '' })}
+            onAdd={(v) => onChange({ ...followUp, choices: followUp.choices.includes(v) ? followUp.choices : [...followUp.choices, v], draft: '' })}
             placeholder="Add an option they can pick"
           />
           <CheckToggle on={!!followUp.unique} onToggle={() => onChange({ ...followUp, unique: !followUp.unique })}
@@ -1388,6 +1388,14 @@ function EventForm({ initial, onSave, onCancel, busy }) {
     }
     if (newQType === 'choice' && answers.length < 2) {
       if (!silent) setQHint('Multiple choice needs at least two answers.');
+      return null;
+    }
+    const emptyBranch = answers.find(a => a.followUp && a.followUp.type === 'choice'
+      && a.followUp.text.trim()
+      && a.followUp.choices.length === 0
+      && !(a.followUp.draft || '').trim());
+    if (emptyBranch) {
+      if (!silent) setQHint(`The follow-up for "${emptyBranch.value}" has no options to pick from.`);
       return null;
     }
     return {
