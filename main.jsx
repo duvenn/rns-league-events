@@ -350,10 +350,12 @@ function normalizeQuestions(questions) {
       ...rest,
       type: q.type || 'text',
       choices: Array.isArray(q.choices) ? q.choices : [],
+      unique: !!q.unique,
       followUps: list.filter(Boolean).map(f => ({
         onAnswer: f.onAnswer,
         text: f.text,
         type: f.type || 'text',
+        unique: !!f.unique,
         choices: Array.isArray(f.choices) ? f.choices : [],
       })),
       legacyIndex: i,
@@ -579,6 +581,9 @@ function PlayerCard({ data, compact = false, actions = null, questions = [], onO
   const comp = COMP_LEVELS.find(c => c.value === data.comp);
   const ArchIcon = archetype ? archetype.icon : null;
   const answeredQA = buildAnswers(data, questions);
+  /* Events can turn Position and Playstyle off, so show them only when the
+     player actually has them — otherwise every card reads "— · —". */
+  const meta = [archetype && archetype.label, data.position].filter(Boolean);
 
   if (compact) {
     /* With onOpen the row is a tappable summary — just the headline facts, with
@@ -598,11 +603,9 @@ function PlayerCard({ data, compact = false, actions = null, questions = [], onO
         </div>
         <div className="min-w-0 flex-1">
           <div className="font-semibold truncate" style={{ color: C.paint }}>{data.robloxUsername || 'Unnamed'}</div>
-          <div className="flex items-center gap-1.5 text-xs" style={{ color: C.paintDim }}>
-            <span>{archetype ? archetype.label : '—'}</span>
-            <span>·</span>
-            <span className="truncate">{data.position || '—'}</span>
-          </div>
+          {meta.length > 0 && (
+            <div className="text-xs truncate" style={{ color: C.paintDim }}>{meta.join(' · ')}</div>
+          )}
           {onOpen ? (
             chips.length > 0 && (
               <div className="flex flex-wrap gap-1 mt-1.5">
@@ -905,7 +908,7 @@ function StatusModal({ events, signups, onClose }) {
 /* ============ SIGNUP FLOW ============ */
 const EMPTY_FORM = { eventId: '', robloxUsername: '', discord: '', position: '', playstyle: '', passing: null, comp: null, availability: [], notes: '', customAnswers: {} };
 
-function SignupFlow({ openEvents, initialEventId, onSubmit, onCancel, submitting }) {
+function SignupFlow({ openEvents, initialEventId, onSubmit, onCancel, submitting, signups }) {
   const [step, setStep] = useState(initialEventId ? 1 : 0);
   const [success, setSuccess] = useState(false);
   const [form, setForm] = useState({ ...EMPTY_FORM, eventId: initialEventId || '' });
@@ -914,6 +917,32 @@ function SignupFlow({ openEvents, initialEventId, onSubmit, onCancel, submitting
 
   const selectedEvent = openEvents.find(ev => ev.id === form.eventId) || null;
   const eventQuestions = normalizeQuestions(selectedEvent && selectedEvent.questions);
+
+  /* Answers already locked in by an accepted player, for questions the handler
+     marked as one-each. Once someone's on the roster with a pick, that pick is
+     off the board for everyone behind them. */
+  const claimed = useMemo(() => {
+    const taken = {};
+    if (!selectedEvent) return taken;
+    (signups || [])
+      .filter(su => su.eventId === selectedEvent.id && su.status === 'accepted')
+      .forEach(su => {
+        const answers = (su && su.customAnswers) || {};
+        if (Array.isArray(answers)) return; // legacy positional answers have no ids
+        eventQuestions.forEach(q => {
+          if (q.unique && answers[q.id]) (taken[q.id] = taken[q.id] || new Set()).add(answers[q.id]);
+          const fu = q.followUps.find(x => x.onAnswer === answers[q.id]);
+          const fkey = q.id + '_followup';
+          if (fu && fu.unique && answers[fkey]) (taken[fkey] = taken[fkey] || new Set()).add(answers[fkey]);
+        });
+      });
+    return taken;
+  }, [signups, selectedEvent, eventQuestions]);
+
+  const openChoices = (key, choices) => {
+    const taken = claimed[key];
+    return taken ? choices.filter(c => !taken.has(c)) : choices;
+  };
   const askPosition = !selectedEvent || selectedEvent.askPosition !== false;
   const askPlaystyle = !selectedEvent || selectedEvent.askPlaystyle !== false;
   const setCustomAnswer = (key, val) => setForm(f => ({ ...f, customAnswers: { ...f.customAnswers, [key]: val } }));
@@ -1067,7 +1096,11 @@ function SignupFlow({ openEvents, initialEventId, onSubmit, onCancel, submitting
                           {q.type === 'yesno' ? (
                             <TilePicker options={[{ value: 'yes', label: 'Yes' }, { value: 'no', label: 'No' }]} value={answer} onChange={v => answerQuestion(q, v)} columns={2} />
                           ) : q.type === 'choice' ? (
-                            <TilePicker options={q.choices.map(c => ({ value: c, label: c }))} value={answer} onChange={v => answerQuestion(q, v)} columns={2} />
+                            openChoices(q.id, q.choices).length > 0 ? (
+                              <TilePicker options={openChoices(q.id, q.choices).map(c => ({ value: c, label: c }))} value={answer} onChange={v => answerQuestion(q, v)} columns={2} />
+                            ) : (
+                              <div className="text-sm rounded-lg px-4 py-3 border" style={{ borderColor: C.line, color: C.paintDim }}>Every option here has been taken.</div>
+                            )
                           ) : (
                             <input value={answer || ''} onChange={e => setCustomAnswer(q.id, e.target.value)} className="w-full rounded-lg px-4 py-3 border" style={{ background: C.panel, borderColor: C.line, color: C.paint }} />
                           )}
@@ -1075,7 +1108,11 @@ function SignupFlow({ openEvents, initialEventId, onSubmit, onCancel, submitting
                             <div key={followUp.onAnswer} className="mt-3 ml-3 pl-3 border-l rise" style={{ borderColor: C.rim }}>
                               <label className="text-xs font-mono2 uppercase tracking-wide block mb-1.5" style={{ color: C.paintDim }}>{followUp.text}</label>
                               {followUp.type === 'choice' ? (
-                                <TilePicker options={followUp.choices.map(c => ({ value: c, label: c }))} value={form.customAnswers[followUpKey]} onChange={v => setCustomAnswer(followUpKey, v)} columns={2} />
+                                openChoices(followUpKey, followUp.choices).length > 0 ? (
+                                  <TilePicker options={openChoices(followUpKey, followUp.choices).map(c => ({ value: c, label: c }))} value={form.customAnswers[followUpKey]} onChange={v => setCustomAnswer(followUpKey, v)} columns={2} />
+                                ) : (
+                                  <div className="text-sm rounded-lg px-4 py-3 border" style={{ borderColor: C.line, color: C.paintDim }}>Everyone here is already taken — try another pick above.</div>
+                                )
                               ) : (
                                 <input value={form.customAnswers[followUpKey] || ''} onChange={e => setCustomAnswer(followUpKey, e.target.value)} className="w-full rounded-lg px-4 py-3 border" style={{ background: C.panel, borderColor: C.line, color: C.paint }} />
                               )}
@@ -1165,29 +1202,24 @@ function HandlerAuth({ onLogin, busy }) {
 /* ============ EVENT FORM (CREATE / EDIT) ============ */
 /* ============ QUESTION BUILDER PARTS ============ */
 
-/* Add/remove the answer options for a multiple-choice question. */
-function ChoiceListEditor({ choices, onAdd, onRemove, placeholder }) {
-  const [draft, setDraft] = useState('');
+/* Add/remove the answer options for a multiple-choice question. The draft is
+   controlled by the parent so a typed-but-not-added answer isn't stranded here
+   when the handler moves on — the parent commits it for them. */
+function ChoiceListEditor({ draft, onDraftChange, onAdd, placeholder }) {
   const commit = () => {
     const v = draft.trim();
-    if (!v || choices.includes(v)) { setDraft(''); return; }
-    onAdd(v);
-    setDraft('');
+    if (v) onAdd(v);
+    onDraftChange('');
   };
   return (
-    <div className="space-y-1.5">
-      {choices.length === 0 && (
-        <div className="text-xs" style={{ color: C.paintDim }}>No answers yet — add at least two.</div>
-      )}
-      <div className="flex gap-2">
-        <input value={draft} onChange={e => setDraft(e.target.value)}
-          onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); commit(); } }}
-          placeholder={placeholder} className="flex-1 rounded-lg px-3 py-2 border text-sm"
-          style={{ background: C.panel, borderColor: C.line, color: C.paint }} />
-        <button type="button" onClick={commit} disabled={!draft.trim()}
-          className="px-3 rounded-lg border text-sm disabled:opacity-40"
-          style={{ borderColor: C.line, color: C.paint }}>Add</button>
-      </div>
+    <div className="flex gap-2">
+      <input value={draft} onChange={e => onDraftChange(e.target.value)}
+        onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); commit(); } }}
+        placeholder={placeholder} className="flex-1 rounded-lg px-3 py-2 border text-sm"
+        style={{ background: C.panel, borderColor: C.line, color: C.paint }} />
+      <button type="button" onClick={commit} disabled={!draft.trim()}
+        className="px-3 rounded-lg border text-sm disabled:opacity-40"
+        style={{ borderColor: C.line, color: C.paint }}>Add</button>
     </div>
   );
 }
@@ -1215,6 +1247,10 @@ function FollowUpEditor({ followUp, onChange, onRemove }) {
       </div>
       {followUp.type === 'choice' && (
         <div className="space-y-1.5">
+          <button type="button" onClick={() => onChange({ ...followUp, unique: !followUp.unique })}
+            className="flex items-center gap-1.5 text-xs" style={{ color: followUp.unique ? C.rim : C.paintDim }}>
+            {followUp.unique ? <Check size={13} /> : <Plus size={13} />} Each option can only be taken once
+          </button>
           {followUp.choices.length > 0 && (
             <div className="flex flex-wrap gap-1.5">
               {followUp.choices.map(c => (
@@ -1226,8 +1262,9 @@ function FollowUpEditor({ followUp, onChange, onRemove }) {
             </div>
           )}
           <ChoiceListEditor
-            choices={followUp.choices}
-            onAdd={(v) => onChange({ ...followUp, choices: [...followUp.choices, v] })}
+            draft={followUp.draft || ''}
+            onDraftChange={(v) => onChange({ ...followUp, draft: v })}
+            onAdd={(v) => followUp.choices.includes(v) || onChange({ ...followUp, choices: [...followUp.choices, v], draft: '' })}
             placeholder="Add an option they can pick"
           />
         </div>
@@ -1270,6 +1307,9 @@ function EventForm({ initial, onSave, onCancel, busy }) {
      in automatically; multiple choice lets the handler build it up. Text
      questions have no answers to branch on, so it stays empty. */
   const [newQAnswers, setNewQAnswers] = useState([]);
+  const [answerDraft, setAnswerDraft] = useState('');
+  const [newQUnique, setNewQUnique] = useState(false);
+  const [qHint, setQHint] = useState('');
   const [photoError, setPhotoError] = useState('');
   const [photoLoading, setPhotoLoading] = useState(false);
   const fileInputRef = useRef(null);
@@ -1284,30 +1324,74 @@ function EventForm({ initial, onSave, onCancel, busy }) {
   const pickType = (t) => {
     setNewQType(t);
     setNewQAnswers(t === 'yesno' ? YES_NO : []);
+    setQHint('');
+  };
+  const addAnswer = (v) => {
+    setNewQAnswers(list => (list.some(a => a.value === v) ? list : [...list, { value: v, followUp: null }]));
+    setAnswerDraft('');
+    setQHint('');
   };
   const setAnswerFollowUp = (i, followUp) =>
     setNewQAnswers(list => list.map((a, idx) => (idx === i ? { ...a, followUp } : a)));
 
-  const canAddQuestion = newQText.trim() && (newQType !== 'choice' || newQAnswers.length >= 2);
+  /* Builds the question currently in the composer, folding in an answer that
+     was typed but never tapped "Add" — that stranded draft was the reason a
+     question could look complete and refuse to add. Returns null and sets a
+     reason when there genuinely isn't enough to save. */
+  const commitQuestion = (silent) => {
+    const text = newQText.trim();
+    const pendingAnswer = answerDraft.trim();
+    const answers = (newQType === 'choice' && pendingAnswer && !newQAnswers.some(a => a.value === pendingAnswer))
+      ? [...newQAnswers, { value: pendingAnswer, followUp: null }]
+      : newQAnswers;
 
-  const addQuestion = () => {
-    if (!canAddQuestion) return;
-    const q = {
+    if (!text) {
+      if (!silent && (answers.length || pendingAnswer)) setQHint('Give the question a name first.');
+      return null;
+    }
+    if (newQType === 'choice' && answers.length < 2) {
+      if (!silent) setQHint('Multiple choice needs at least two answers.');
+      return null;
+    }
+    return {
       id: uid(),
-      text: newQText.trim(),
+      text,
       type: newQType,
-      choices: newQType === 'choice' ? newQAnswers.map(a => a.value) : [],
-      followUps: newQAnswers
+      unique: newQType === 'choice' ? !!newQUnique : false,
+      choices: newQType === 'choice' ? answers.map(a => a.value) : [],
+      followUps: answers
         .filter(a => a.followUp && a.followUp.text.trim())
         .map(a => ({
           onAnswer: a.value,
           text: a.followUp.text.trim(),
           type: a.followUp.type,
-          choices: a.followUp.type === 'choice' ? a.followUp.choices : [],
+          unique: a.followUp.type === 'choice' ? !!a.followUp.unique : false,
+          choices: a.followUp.type === 'choice'
+            ? (a.followUp.draft && a.followUp.draft.trim() && !a.followUp.choices.includes(a.followUp.draft.trim())
+                ? [...a.followUp.choices, a.followUp.draft.trim()]
+                : a.followUp.choices)
+            : [],
         })),
     };
-    set('questions', [...questions, q]);
+  };
+
+  const resetComposer = () => {
     setNewQText(''); setNewQType('text'); setNewQAnswers([]);
+    setAnswerDraft(''); setNewQUnique(false); setQHint('');
+  };
+
+  const addQuestion = () => {
+    const q = commitQuestion(false);
+    if (!q) return;
+    set('questions', [...questions, q]);
+    resetComposer();
+  };
+
+  /* Saving with a question still sitting in the composer used to throw it away.
+     Add it first, then save. */
+  const saveEvent = () => {
+    const pending = commitQuestion(true);
+    onSave(pending ? { ...f, questions: [...questions, pending] } : f);
   };
   const removeQuestion = (i) => set('questions', questions.filter((_, idx) => idx !== i));
 
@@ -1385,7 +1469,7 @@ function EventForm({ initial, onSave, onCancel, busy }) {
                 <div className="flex items-center gap-2">
                   <span className="text-sm flex-1" style={{ color: C.paint }}>{q.text}</span>
                   <span className="text-xs font-mono2 uppercase" style={{ color: C.paintDim }}>
-                    {q.type === 'yesno' ? 'Yes/No' : q.type === 'choice' ? 'Choice' : 'Text'}
+                    {q.type === 'yesno' ? 'Yes/No' : q.type === 'choice' ? 'Choice' : 'Text'}{q.unique ? ' · 1 each' : ''}
                   </span>
                   <button type="button" onClick={() => removeQuestion(i)} style={{ color: C.paintDim }} aria-label="Remove question"><X size={14} /></button>
                 </div>
@@ -1400,7 +1484,7 @@ function EventForm({ initial, onSave, onCancel, busy }) {
                   <div key={fu.onAnswer} className="mt-1.5 ml-3 pl-3 border-l text-xs" style={{ borderColor: C.line, color: C.paintDim }}>
                     If <span style={{ color: C.rim }}>{fu.onAnswer === 'yes' ? 'Yes' : fu.onAnswer === 'no' ? 'No' : fu.onAnswer}</span> → {fu.text}
                     {fu.type === 'choice' && fu.choices.length > 0 && (
-                      <span> ({fu.choices.join(', ')})</span>
+                      <span> ({fu.choices.join(', ')}){fu.unique ? ' · 1 each' : ''}</span>
                     )}
                   </div>
                 ))}
@@ -1434,20 +1518,28 @@ function EventForm({ initial, onSave, onCancel, busy }) {
                 />
               ))}
               {newQType === 'choice' && (
+                <button type="button" onClick={() => setNewQUnique(v => !v)} className="flex items-center gap-1.5 text-xs"
+                  style={{ color: newQUnique ? C.rim : C.paintDim }}>
+                  {newQUnique ? <Check size={13} /> : <Plus size={13} />} Each answer can only be taken once
+                </button>
+              )}
+              {newQType === 'choice' && (
                 <ChoiceListEditor
-                  choices={newQAnswers.map(a => a.value)}
-                  onAdd={(v) => setNewQAnswers(list => [...list, { value: v, followUp: null }])}
+                  draft={answerDraft}
+                  onDraftChange={setAnswerDraft}
+                  onAdd={addAnswer}
                   placeholder="Add an answer, e.g. Lakers"
                 />
               )}
             </div>
           )}
 
-          <button type="button" onClick={addQuestion} disabled={!canAddQuestion} className="w-full py-2 rounded-lg border flex items-center justify-center gap-1 text-sm disabled:opacity-40" style={{ borderColor: C.line, color: C.paint }}><Plus size={14} />Add Question</button>
+          {qHint && <div className="text-xs" style={{ color: C.foul }}>{qHint}</div>}
+          <button type="button" onClick={addQuestion} className="w-full py-2 rounded-lg border flex items-center justify-center gap-1 text-sm" style={{ borderColor: C.line, color: C.paint }}><Plus size={14} />Add Question</button>
         </div>
       </div>
       <div className="flex gap-3">
-        <button disabled={!valid || busy} onClick={() => onSave(f)} className="px-4 py-2.5 rounded-lg font-semibold text-sm disabled:opacity-40 flex items-center gap-2" style={{ background: C.rim, color: C.onRim }}>
+        <button disabled={!valid || busy} onClick={saveEvent} className="px-4 py-2.5 rounded-lg font-semibold text-sm disabled:opacity-40 flex items-center gap-2" style={{ background: C.rim, color: C.onRim }}>
           {busy && <Loader2 size={14} className="animate-spin" />} Save Event
         </button>
         <button onClick={onCancel} className="px-4 py-2.5 rounded-lg text-sm" style={{ color: C.paintDim }}>Cancel</button>
@@ -1466,7 +1558,7 @@ function DetailSection({ label, children }) {
   );
 }
 
-function ApplicantDetail({ applicant, event, index, total, onPrev, onNext, onAccept, onReject, onReconsider, onClose }) {
+function ApplicantDetail({ applicant, event, accepted, index, total, onPrev, onNext, onAccept, onReject, onReconsider, onClose }) {
   useEffect(() => {
     const onKey = (e) => {
       if (e.key === 'Escape') onClose();
@@ -1493,6 +1585,26 @@ function ApplicantDetail({ applicant, event, index, total, onPrev, onNext, onAcc
   const ArchIcon = archetype ? archetype.icon : null;
   const submitted = formatSubmitted(applicant.submittedAt);
   const teamName = findTeamName(event, applicant.id);
+  const meta = [archetype && archetype.label, applicant.position].filter(Boolean);
+
+  /* Which of this player's one-each picks someone on the roster already holds. */
+  const conflicts = [];
+  const mine = (applicant.customAnswers && !Array.isArray(applicant.customAnswers)) ? applicant.customAnswers : {};
+  normalizeQuestions(questions).forEach(q => {
+    const fu = q.followUps.find(x => x.onAnswer === mine[q.id]);
+    const checks = [
+      q.unique && mine[q.id] ? { key: q.id, val: mine[q.id] } : null,
+      fu && fu.unique && mine[q.id + '_followup'] ? { key: q.id + '_followup', val: mine[q.id + '_followup'] } : null,
+    ].filter(Boolean);
+    checks.forEach(({ key, val }) => {
+      const holder = (accepted || []).find(other => {
+        if (other.id === applicant.id) return false;
+        const a2 = (other.customAnswers && !Array.isArray(other.customAnswers)) ? other.customAnswers : {};
+        return a2[key] === val;
+      });
+      if (holder) conflicts.push(`${val} is already taken by ${holder.robloxUsername || 'another player'}`);
+    });
+  });
 
   return (
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center sm:p-4" style={{ background: 'rgba(20,21,28,0.42)' }}
@@ -1510,9 +1622,9 @@ function ApplicantDetail({ applicant, event, index, total, onPrev, onNext, onAcc
             <div className="font-display text-xl uppercase tracking-wide leading-tight truncate" style={{ color: C.paint }}>
               {applicant.robloxUsername || 'Unnamed'}
             </div>
-            <div className="text-xs mt-0.5" style={{ color: C.paintDim }}>
-              {archetype ? archetype.label : 'No playstyle'} · {applicant.position || 'No position'}
-            </div>
+            {meta.length > 0 && (
+              <div className="text-xs mt-0.5" style={{ color: C.paintDim }}>{meta.join(' · ')}</div>
+            )}
           </div>
           <Badge status={applicant.status} />
           <button onClick={onClose} aria-label="Close" style={{ color: C.paintDim }}><X size={18} /></button>
@@ -1526,6 +1638,7 @@ function ApplicantDetail({ applicant, event, index, total, onPrev, onNext, onAcc
             {teamName && <span>Team: <span style={{ color: C.paint }}>{teamName}</span></span>}
           </div>
 
+          {(passing || comp) && (
           <DetailSection label="Scouting Report">
             <div className="space-y-3">
               <div>
@@ -1538,6 +1651,7 @@ function ApplicantDetail({ applicant, event, index, total, onPrev, onNext, onAcc
               </div>
             </div>
           </DetailSection>
+          )}
 
           <DetailSection label="Availability">
             {applicant.availability && applicant.availability.length > 0 ? (
@@ -1584,6 +1698,11 @@ function ApplicantDetail({ applicant, event, index, total, onPrev, onNext, onAcc
 
         {/* footer */}
         <div className="p-4 sm:p-5 border-t space-y-3" style={{ borderColor: C.line }}>
+          {conflicts.length > 0 && (
+            <div className="rounded-lg px-3 py-2 text-xs" style={{ background: 'rgba(232,132,60,0.14)', color: '#A85A16' }}>
+              {conflicts.join(' · ')}. Accepting means two players hold the same pick.
+            </div>
+          )}
           {applicant.status === 'pending' ? (
             <div className="flex gap-3">
               <button onClick={() => onReject(applicant.id)} className="flex-1 py-3 rounded-xl border flex items-center justify-center gap-2 font-semibold text-sm uppercase tracking-wide" style={{ borderColor: C.foul, color: C.foul }}>
@@ -1838,6 +1957,7 @@ function EventManagerRow({ event, applicants, accepted, rejected, signupsById, o
         <ApplicantDetail
           applicant={detailPlayer}
           event={event}
+          accepted={accepted}
           index={detailIndex}
           total={detailList.length}
           onPrev={() => stepDetail(-1)}
@@ -2170,7 +2290,7 @@ function App() {
           </>
         )}
         {view === 'signup' && (
-          <SignupFlow openEvents={openEvents} initialEventId={preselectedEventId} onSubmit={submitSignup} onCancel={goHome} submitting={submittingSignup} />
+          <SignupFlow openEvents={openEvents} initialEventId={preselectedEventId} onSubmit={submitSignup} onCancel={goHome} submitting={submittingSignup} signups={signups} />
         )}
         {view === 'handlerAuth' && (
           <HandlerAuth onLogin={loginHandler} busy={authBusy} />
