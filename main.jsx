@@ -124,19 +124,26 @@ const storage = {
   },
 };
 
-/* ============ DESIGN TOKENS ============ */
+/* ============ DESIGN TOKENS ============
+   White court. The palette is deliberately cool — a blue-cast near-black and
+   grey-blue fills — rather than the warm cream that white layouts default to,
+   so the brand red stays the only warm thing on screen and reads as the accent
+   everywhere it appears. Token names are inherited from the dark build so
+   every component keeps working; only the values changed. */
 const C = {
-  ink: '#0F0808',
-  inkSoft: '#1A0D0D',
-  panel: '#221010',
-  paint: '#F5EDEA',
-  paintDim: '#C7B3AF',
-  hardwood: '#5C1A1A',
-  hardwoodSoft: '#2B1212',
-  rim: '#E5262C',
-  net: '#8A7A72',
-  foul: '#B33030',
-  line: 'rgba(245,237,234,0.10)',
+  ink: '#FFFFFF',            // page base
+  inkSoft: '#EEF1F6',        // recessed fill (chalk)
+  panel: '#FFFFFF',          // cards
+  paint: '#14151C',          // primary text
+  paintDim: '#616779',       // secondary text
+  hardwood: 'rgba(20,21,28,0.16)', // court-line strokes
+  hardwoodSoft: '#F2F5FA',   // chips, avatars, inset blocks
+  rim: '#E5262C',            // brand red
+  net: '#8A91A6',            // muted status
+  foul: '#C4232E',           // pass / destructive
+  line: 'rgba(20,21,28,0.11)',
+  onRim: '#FFFFFF',          // text sitting on a red fill
+  shadow: '0 1px 2px rgba(20,21,28,0.05), 0 8px 24px -12px rgba(20,21,28,0.18)',
 };
 
 /* ============ CONSTANTS ============ */
@@ -325,21 +332,39 @@ function findTeamName(event, signupId) {
   return t ? t.name : null;
 }
 
-/* Events created by earlier builds stored questions as plain strings and each
-   signup's answers as a positional array. Everything downstream expects
-   { id, text, type, followUp } questions and answers keyed by question id, so
-   normalize on read — old and new events both render, no data migration. */
+/* A question is { id, text, type, choices[], followUps[] } where type is
+   'text' | 'yesno' | 'choice', and each follow-up is
+   { onAnswer, text, type, choices[] } — so a specific answer, not just Yes,
+   can open a specific next question (pick a team, then pick from that team's
+   players). Earlier builds stored questions as plain strings, and later ones
+   as a single `followUp` object that only fired on Yes/No. Both are folded
+   into the current shape on read, so old events keep working untouched. */
 function normalizeQuestions(questions) {
-  return (questions || []).map((q, i) => (
-    typeof q === 'string'
-      ? { id: 'q' + i, text: q, type: 'text', legacyIndex: i }
-      : { ...q, legacyIndex: i }
-  ));
+  return (questions || []).map((q, i) => {
+    if (typeof q === 'string') {
+      return { id: 'q' + i, text: q, type: 'text', choices: [], followUps: [], legacyIndex: i };
+    }
+    const { followUp, followUps, ...rest } = q;
+    const list = Array.isArray(followUps) ? followUps : (followUp ? [followUp] : []);
+    return {
+      ...rest,
+      type: q.type || 'text',
+      choices: Array.isArray(q.choices) ? q.choices : [],
+      followUps: list.filter(Boolean).map(f => ({
+        onAnswer: f.onAnswer,
+        text: f.text,
+        type: f.type || 'text',
+        choices: Array.isArray(f.choices) ? f.choices : [],
+      })),
+      legacyIndex: i,
+    };
+  });
 }
 
 /* Flattens an event's handler questions + a signup's answers into one ordered
-   list, resolving follow-ups. Pass includeUnanswered to keep skipped questions
-   in the list (the detail view shows them, the summary row doesn't). */
+   list, resolving whichever follow-up the player's answer triggered. Pass
+   includeUnanswered to keep skipped questions in the list (the detail view
+   shows them, the summary row doesn't). */
 function buildAnswers(data, questions, includeUnanswered = false) {
   const list = normalizeQuestions(questions);
   const raw = (data && data.customAnswers) || {};
@@ -353,11 +378,12 @@ function buildAnswers(data, questions, includeUnanswered = false) {
     if (answered || includeUnanswered) {
       out.push({ key: q.id, text: q.text, a: answered ? pretty(answer) : null, answered });
     }
-    if (q.followUp && answered && answer === q.followUp.onAnswer) {
+    const triggered = answered && q.followUps.find(f => f.onAnswer === answer);
+    if (triggered) {
       const fAnswer = positional ? undefined : raw[q.id + '_followup'];
       const fAnswered = filled(fAnswer);
       if (fAnswered || includeUnanswered) {
-        out.push({ key: q.id + '_followup', text: q.followUp.text, a: fAnswered ? pretty(fAnswer) : null, answered: fAnswered, followUp: true });
+        out.push({ key: q.id + '_followup', text: triggered.text, a: fAnswered ? pretty(fAnswer) : null, answered: fAnswered, followUp: true });
       }
     }
   });
@@ -380,12 +406,59 @@ function GlobalStyles() {
       .font-body { font-family: 'Manrope', sans-serif; }
       .font-mono2 { font-family: 'JetBrains Mono', monospace; }
       *:focus-visible { outline: 2px solid #E5262C; outline-offset: 2px; }
-      body { background: #0F0808; }
+      body { background: #FFFFFF; color: #14151C; }
+
+      /* ---- ambient court -------------------------------------------------
+         The one place this design spends its boldness: a fixed field behind
+         everything, made of two slow colour washes and the geometry of a
+         basketball court drifting across it. On white it reads like a gym
+         floor seen through frosted glass. Everything else stays quiet. */
+      .court-field { position: fixed; inset: 0; z-index: 0; pointer-events: none; overflow: hidden; }
+      .wash { position: absolute; border-radius: 50%; filter: blur(90px); will-change: transform; }
+      .wash-a { width: 46vmax; height: 46vmax; top: -14vmax; left: -10vmax;
+                background: radial-gradient(circle, rgba(229,38,44,0.16), rgba(229,38,44,0) 70%);
+                animation: driftA 34s ease-in-out infinite; }
+      .wash-b { width: 40vmax; height: 40vmax; bottom: -16vmax; right: -8vmax;
+                background: radial-gradient(circle, rgba(78,102,168,0.15), rgba(78,102,168,0) 70%);
+                animation: driftB 44s ease-in-out infinite; }
+      .wash-c { width: 30vmax; height: 30vmax; top: 38%; left: 42%;
+                background: radial-gradient(circle, rgba(232,132,60,0.11), rgba(232,132,60,0) 70%);
+                animation: driftC 52s ease-in-out infinite; }
+      @keyframes driftA {
+        0%,100% { transform: translate3d(0,0,0) scale(1); }
+        50%     { transform: translate3d(9vmax,7vmax,0) scale(1.14); }
+      }
+      @keyframes driftB {
+        0%,100% { transform: translate3d(0,0,0) scale(1.08); }
+        50%     { transform: translate3d(-11vmax,-6vmax,0) scale(1); }
+      }
+      @keyframes driftC {
+        0%,100% { transform: translate3d(-4vmax,2vmax,0) scale(1); }
+        50%     { transform: translate3d(6vmax,-7vmax,0) scale(1.2); }
+      }
+      .court-lines { position: absolute; inset: -20%; width: 140%; height: 140%;
+                     animation: courtTurn 150s linear infinite; transform-origin: 50% 50%; }
+      @keyframes courtTurn { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+
+      /* ---- motion --------------------------------------------------------- */
       @keyframes cardIn { from { opacity: 0; transform: translateY(10px) scale(0.98); } to { opacity: 1; transform: none; } }
+      @keyframes riseIn { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
+      .rise { animation: riseIn 0.5s cubic-bezier(0.22,0.85,0.3,1) both; }
+      /* Lists stagger in rather than snapping — reads as dealing cards out. */
+      .stagger > * { animation: riseIn 0.45s cubic-bezier(0.22,0.85,0.3,1) both; }
+      .stagger > *:nth-child(1) { animation-delay: 0.02s; }
+      .stagger > *:nth-child(2) { animation-delay: 0.06s; }
+      .stagger > *:nth-child(3) { animation-delay: 0.10s; }
+      .stagger > *:nth-child(4) { animation-delay: 0.14s; }
+      .stagger > *:nth-child(5) { animation-delay: 0.18s; }
+      .stagger > *:nth-child(n+6) { animation-delay: 0.22s; }
+      .lift { transition: transform 0.22s cubic-bezier(0.22,0.85,0.3,1), box-shadow 0.22s ease; }
+      .lift:hover { transform: translateY(-3px); box-shadow: 0 12px 32px -14px rgba(20,21,28,0.30); }
       /* Rows carry inline styles, which beat Tailwind's hover: classes — so the
          tappable-row affordance lives here instead. */
-      .tap-row { transition: border-color 0.15s ease; }
-      .tap-row:hover, .tap-row:focus-visible { border-color: rgba(245,237,234,0.30) !important; }
+      .tap-row { transition: border-color 0.15s ease, background-color 0.15s ease; }
+      .tap-row:hover, .tap-row:focus-visible { border-color: rgba(20,21,28,0.26) !important; background: #F7F9FC !important; }
+
       @media (prefers-reduced-motion: reduce) {
         *, *::before, *::after {
           animation-duration: 0.01ms !important;
@@ -395,6 +468,27 @@ function GlobalStyles() {
         }
       }
     `}</style>
+  );
+}
+
+/* The court field itself. Fixed, inert, and behind every screen — the one
+   constant while the app changes around it. */
+function AmbientCourt() {
+  return (
+    <div className="court-field" aria-hidden="true">
+      <div className="wash wash-a" />
+      <div className="wash wash-b" />
+      <div className="wash wash-c" />
+      <svg className="court-lines" viewBox="0 0 1000 1000" preserveAspectRatio="xMidYMid slice">
+        <g fill="none" stroke="rgba(20,21,28,0.055)" strokeWidth="1.5">
+          <circle cx="500" cy="500" r="120" />
+          <circle cx="500" cy="500" r="360" />
+          <path d="M 180 860 L 180 640 A 320 320 0 0 1 820 640 L 820 860" />
+          <line x1="60" y1="500" x2="940" y2="500" />
+          <rect x="380" y="860" width="240" height="130" />
+        </g>
+      </svg>
+    </div>
   );
 }
 
@@ -418,13 +512,17 @@ function CourtLines() {
 
 /* ============ BADGE ============ */
 function Badge({ status }) {
+  /* On white these have to be tellable apart at a glance. Accepted is the only
+     filled badge — the roster is the thing you're looking for. Pending picks up
+     the amber from the background wash because it's the one that needs a
+     decision, and passed recedes into grey. */
   const map = {
-    open: { label: 'OPEN', bg: 'rgba(229,38,44,0.15)', color: C.rim },
-    full: { label: 'FULL', bg: 'rgba(138,122,114,0.15)', color: C.net },
-    closed: { label: 'CLOSED', bg: 'rgba(246,241,228,0.08)', color: C.paintDim },
-    pending: { label: 'PENDING', bg: 'rgba(138,122,114,0.15)', color: C.net },
-    accepted: { label: 'ACCEPTED', bg: 'rgba(229,38,44,0.15)', color: C.rim },
-    rejected: { label: 'PASSED', bg: 'rgba(179,48,48,0.15)', color: C.foul },
+    open: { label: 'OPEN', bg: 'rgba(229,38,44,0.12)', color: C.rim },
+    full: { label: 'FULL', bg: 'rgba(138,145,166,0.14)', color: C.net },
+    closed: { label: 'CLOSED', bg: 'rgba(20,21,28,0.05)', color: C.paintDim },
+    pending: { label: 'PENDING', bg: 'rgba(232,132,60,0.16)', color: '#A85A16' },
+    accepted: { label: 'ACCEPTED', bg: C.rim, color: C.onRim },
+    rejected: { label: 'PASSED', bg: 'rgba(20,21,28,0.06)', color: C.paintDim },
   };
   const s = map[status] || map.closed;
   return (
@@ -550,7 +648,7 @@ function PlayerCard({ data, compact = false, actions = null, questions = [], onO
   }
 
   return (
-    <div className="rounded-xl overflow-hidden border" style={{ borderColor: C.line, background: C.panel }}>
+    <div className="rounded-xl overflow-hidden border" style={{ borderColor: C.line, background: C.panel, boxShadow: C.shadow }}>
       <div className="p-4 space-y-3">
         <div>
           <div className="flex items-center gap-2">
@@ -598,7 +696,7 @@ function PhotoFrame({ photo, onPick, loading }) {
       ) : photo ? (
         <>
           <img src={photo} alt="Your card" className="w-full h-full object-cover" />
-          <div className="absolute bottom-2 right-2 flex items-center gap-1 rounded-full px-3 py-1.5 text-xs font-semibold" style={{ background: 'rgba(18,16,13,0.85)', color: C.paint }}>
+          <div className="absolute bottom-2 right-2 flex items-center gap-1 rounded-full px-3 py-1.5 text-xs font-semibold" style={{ background: 'rgba(255,255,255,0.78)', color: C.paint }}>
             <Camera size={12} /> Change
           </div>
         </>
@@ -632,7 +730,7 @@ function ToastBanner({ toast }) {
   if (!toast) return null;
   const isError = toast.type === 'error';
   return (
-    <div className="fixed bottom-5 left-1/2 -translate-x-1/2 z-50 rounded-lg px-4 py-3 flex items-center gap-2 shadow-lg" style={{ background: isError ? C.foul : C.rim, color: C.ink }}>
+    <div className="fixed bottom-5 left-1/2 -translate-x-1/2 z-50 rounded-lg px-4 py-3 flex items-center gap-2 shadow-lg" style={{ background: isError ? C.foul : C.rim, color: C.onRim }}>
       {isError ? <AlertCircle size={16} /> : <Check size={16} />}
       <span className="text-sm font-semibold">{toast.msg}</span>
     </div>
@@ -642,7 +740,7 @@ function ToastBanner({ toast }) {
 /* ============ NAV BAR ============ */
 function NavBar({ session, onHome, onEvents, onStatus, onSignup, onStaff }) {
   return (
-    <header className="sticky top-0 z-40 border-b" style={{ background: 'rgba(18,16,13,0.92)', borderColor: C.line, backdropFilter: 'blur(8px)' }}>
+    <header className="sticky top-0 z-40 border-b" style={{ background: 'rgba(255,255,255,0.86)', borderColor: C.line, backdropFilter: 'blur(8px)' }}>
       <div className="max-w-6xl mx-auto px-4 sm:px-6 py-3 flex items-center justify-between gap-3">
         <button onClick={onHome} className="flex items-center gap-2 shrink-0">
           <span className="font-display text-2xl uppercase" style={{ color: C.rim }}>RNS</span>
@@ -651,7 +749,7 @@ function NavBar({ session, onHome, onEvents, onStatus, onSignup, onStaff }) {
         <div className="flex items-center gap-2 sm:gap-3">
           <button onClick={onEvents} className="hidden sm:inline text-sm px-3 py-2 rounded-lg transition hover:opacity-80" style={{ color: C.paintDim }}>Events</button>
           <button onClick={onStatus} className="hidden sm:inline text-sm px-3 py-2 rounded-lg transition hover:opacity-80" style={{ color: C.paintDim }}>My Status</button>
-          <button onClick={onSignup} className="text-sm font-semibold px-4 py-2 rounded-lg transition hover:-translate-y-0.5" style={{ background: C.rim, color: C.paint }}>Sign Up</button>
+          <button onClick={onSignup} className="text-sm font-semibold px-4 py-2 rounded-lg transition hover:-translate-y-0.5" style={{ background: C.rim, color: C.onRim }}>Sign Up</button>
           <button onClick={onStaff} className="text-sm px-3 py-2 rounded-lg border flex items-center gap-1.5 transition hover:opacity-80" style={{ borderColor: C.hardwood, color: C.paint }}>
             {session ? <ShieldCheck size={14} /> : <Lock size={14} />}
             <span className="hidden sm:inline">{session ? 'Dashboard' : 'Staff'}</span>
@@ -665,7 +763,7 @@ function NavBar({ session, onHome, onEvents, onStatus, onSignup, onStaff }) {
 /* ============ HERO ============ */
 function Hero({ onSignup, onStaff }) {
   return (
-    <section className="relative overflow-hidden px-6 py-20 md:py-28 text-center" style={{ background: C.ink }}>
+    <section className="relative overflow-hidden px-6 py-20 md:py-28 text-center">
       <CourtLines />
       <div className="relative max-w-3xl mx-auto">
         <div className="font-mono2 text-xs tracking-widest mb-4 uppercase" style={{ color: C.rim }}>Practical Basketball · Community Run</div>
@@ -676,9 +774,9 @@ function Hero({ onSignup, onStaff }) {
           Sign up, get scouted, get drafted. The hub for pickup runs, leagues, and tournaments.
         </p>
         <div className="flex flex-col sm:flex-row gap-4 justify-center">
-          <button onClick={onSignup} className="rounded-xl px-6 py-4 font-display uppercase tracking-wide text-lg transition hover:-translate-y-0.5" style={{ background: C.rim, color: C.paint }}>
+          <button onClick={onSignup} className="rounded-xl px-6 py-4 font-display uppercase tracking-wide text-lg transition hover:-translate-y-0.5" style={{ background: C.rim, color: C.onRim }}>
             Sign Up To Play
-            <div className="text-xs font-body normal-case tracking-normal mt-0.5" style={{ color: 'rgba(18,16,13,0.7)' }}>Get scouted for the next run</div>
+            <div className="text-xs font-body normal-case tracking-normal mt-0.5" style={{ color: 'rgba(255,255,255,0.72)' }}>Get scouted for the next run</div>
           </button>
           <button onClick={onStaff} className="rounded-xl px-6 py-4 font-display uppercase tracking-wide text-lg border transition hover:-translate-y-0.5" style={{ borderColor: C.hardwood, color: C.paint, background: C.inkSoft }}>
             Event Handler Login
@@ -696,7 +794,7 @@ function EventCardPublic({ event, acceptedCount, onClick }) {
   const isFull = event.capacity && acceptedCount >= event.capacity;
   const status = event.status === 'closed' ? 'closed' : (isFull ? 'full' : 'open');
   return (
-    <button onClick={onClick} className="text-left rounded-xl border overflow-hidden transition hover:-translate-y-0.5" style={{ borderColor: C.line, background: C.panel }}>
+    <button onClick={onClick} className="text-left rounded-xl border overflow-hidden lift" style={{ borderColor: C.line, background: C.panel, boxShadow: C.shadow }}>
       <div className="aspect-video relative" style={{ background: C.hardwoodSoft }}>
         {event.photo ? (
           <img src={event.photo} alt={event.title} className="w-full h-full object-cover" />
@@ -705,7 +803,7 @@ function EventCardPublic({ event, acceptedCount, onClick }) {
             <Trophy size={28} color={C.paintDim} />
           </div>
         )}
-        <div className="absolute top-2 left-2 rounded-lg px-2.5 py-1.5 text-center font-mono2" style={{ background: 'rgba(18,16,13,0.85)' }}>
+        <div className="absolute top-2 left-2 rounded-lg px-2.5 py-1.5 text-center font-mono2" style={{ background: 'rgba(255,255,255,0.78)' }}>
           <div className="text-lg font-bold leading-none" style={{ color: C.rim }}>{day}</div>
           <div className="text-xs tracking-widest" style={{ color: C.paintDim }}>{month}</div>
         </div>
@@ -739,7 +837,7 @@ function EventsStrip({ events, acceptedCounts, onSignupClick }) {
           No events on the slate right now. Check back soon.
         </div>
       ) : (
-        <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+        <div className="stagger grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
           {events.map(ev => (
             <EventCardPublic key={ev.id} event={ev} acceptedCount={acceptedCounts[ev.id] || 0} onClick={() => onSignupClick(ev.id)} />
           ))}
@@ -774,7 +872,7 @@ function StatusModal({ events, signups, onClose }) {
   const teamName = result ? findTeamName(ev, result.id) : null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: 'rgba(18,16,13,0.85)' }}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: 'rgba(255,255,255,0.78)' }}>
       <div className="w-full max-w-sm rounded-xl border p-6 relative" style={{ background: C.panel, borderColor: C.line }}>
         <button onClick={onClose} className="absolute top-4 right-4" style={{ color: C.paintDim }}><X size={18} /></button>
         <h3 className="font-display text-xl uppercase mb-4" style={{ color: C.paint }}>My Status</h3>
@@ -784,7 +882,7 @@ function StatusModal({ events, signups, onClose }) {
             {events.map(e => <option key={e.id} value={e.id}>{e.title}</option>)}
           </select>
           <input value={username} onChange={e => { setUsername(e.target.value); setResult(undefined); }} placeholder="Your Roblox username" className="w-full rounded-lg px-3 py-2.5 border" style={{ background: C.inkSoft, borderColor: C.line, color: C.paint }} />
-          <button onClick={check} disabled={!eventId || !username.trim()} className="w-full rounded-lg py-2.5 font-semibold disabled:opacity-40" style={{ background: C.rim, color: C.paint }}>Check Status</button>
+          <button onClick={check} disabled={!eventId || !username.trim()} className="w-full rounded-lg py-2.5 font-semibold disabled:opacity-40" style={{ background: C.rim, color: C.onRim }}>Check Status</button>
         </div>
         {result !== undefined && (
           <div className="mt-5 pt-5 border-t space-y-3" style={{ borderColor: C.line }}>
@@ -820,6 +918,15 @@ function SignupFlow({ openEvents, initialEventId, onSubmit, onCancel, submitting
   const askPlaystyle = !selectedEvent || selectedEvent.askPlaystyle !== false;
   const setCustomAnswer = (key, val) => setForm(f => ({ ...f, customAnswers: { ...f.customAnswers, [key]: val } }));
 
+  /* Picking a different answer swaps in a different follow-up, so the old
+     follow-up answer has to go with it — otherwise "Lakers → LeBron" would
+     still be attached after switching to Celtics. */
+  const answerQuestion = (q, val) => setForm(f => {
+    const next = { ...f.customAnswers, [q.id]: val };
+    if (f.customAnswers[q.id] !== val) delete next[q.id + '_followup'];
+    return { ...f, customAnswers: next };
+  });
+
   const toggleDay = (day) => {
     setForm(f => ({
       ...f,
@@ -853,7 +960,7 @@ function SignupFlow({ openEvents, initialEventId, onSubmit, onCancel, submitting
           <PlayerCard data={form} questions={eventQuestions} />
         </div>
         <div className="flex flex-col sm:flex-row gap-3 justify-center">
-          <button onClick={() => { setForm(EMPTY_FORM); setStep(0); setSuccess(false); }} className="px-5 py-3 rounded-lg font-semibold" style={{ background: C.rim, color: C.paint }}>Sign Up For Another Event</button>
+          <button onClick={() => { setForm(EMPTY_FORM); setStep(0); setSuccess(false); }} className="px-5 py-3 rounded-lg font-semibold" style={{ background: C.rim, color: C.onRim }}>Sign Up For Another Event</button>
           <button onClick={onCancel} className="px-5 py-3 rounded-lg border" style={{ borderColor: C.hardwood, color: C.paint }}>Back To Home</button>
         </div>
       </section>
@@ -881,18 +988,18 @@ function SignupFlow({ openEvents, initialEventId, onSubmit, onCancel, submitting
                     No open events right now. Check back soon.
                   </div>
                 ) : (
-                  <div className="grid sm:grid-cols-2 gap-3">
+                  <div className="stagger grid sm:grid-cols-2 gap-3">
                     {openEvents.map(ev => {
                       const parts = formatDateParts(ev.date);
                       return (
-                        <button key={ev.id} onClick={() => { set('eventId', ev.id); setStep(1); }} className="text-left rounded-xl border overflow-hidden transition hover:-translate-y-0.5" style={{ borderColor: form.eventId === ev.id ? C.rim : C.line, background: C.panel }}>
+                        <button key={ev.id} onClick={() => { set('eventId', ev.id); setStep(1); }} className="text-left rounded-xl border overflow-hidden lift" style={{ borderColor: form.eventId === ev.id ? C.rim : C.line, background: C.panel, boxShadow: C.shadow }}>
                           <div className="aspect-video relative" style={{ background: C.hardwoodSoft }}>
                             {ev.photo ? (
                               <img src={ev.photo} alt={ev.title} className="w-full h-full object-cover" />
                             ) : (
                               <div className="w-full h-full flex items-center justify-center"><Trophy size={24} color={C.paintDim} /></div>
                             )}
-                            <div className="absolute top-2 left-2 rounded px-2 py-1 font-mono2 text-xs" style={{ background: 'rgba(18,16,13,0.85)', color: C.paintDim }}>{parts.month} {parts.day}</div>
+                            <div className="absolute top-2 left-2 rounded px-2 py-1 font-mono2 text-xs" style={{ background: 'rgba(255,255,255,0.78)', color: C.paintDim }}>{parts.month} {parts.day}</div>
                           </div>
                           <div className="p-3">
                             <div className="font-display uppercase text-lg leading-tight" style={{ color: C.paint }}>{ev.title}</div>
@@ -953,19 +1060,25 @@ function SignupFlow({ openEvents, initialEventId, onSubmit, onCancel, submitting
                     {eventQuestions.map((q) => {
                       const answer = form.customAnswers[q.id];
                       const followUpKey = q.id + '_followup';
-                      const showFollowUp = q.followUp && answer === q.followUp.onAnswer;
+                      const followUp = q.followUps.find(fu => fu.onAnswer === answer);
                       return (
                         <div key={q.id}>
                           <label className="text-xs font-mono2 uppercase tracking-wide block mb-1.5" style={{ color: C.paintDim }}>{q.text}</label>
                           {q.type === 'yesno' ? (
-                            <TilePicker options={[{ value: 'yes', label: 'Yes' }, { value: 'no', label: 'No' }]} value={answer} onChange={v => setCustomAnswer(q.id, v)} columns={2} />
+                            <TilePicker options={[{ value: 'yes', label: 'Yes' }, { value: 'no', label: 'No' }]} value={answer} onChange={v => answerQuestion(q, v)} columns={2} />
+                          ) : q.type === 'choice' ? (
+                            <TilePicker options={q.choices.map(c => ({ value: c, label: c }))} value={answer} onChange={v => answerQuestion(q, v)} columns={2} />
                           ) : (
                             <input value={answer || ''} onChange={e => setCustomAnswer(q.id, e.target.value)} className="w-full rounded-lg px-4 py-3 border" style={{ background: C.panel, borderColor: C.line, color: C.paint }} />
                           )}
-                          {showFollowUp && (
-                            <div className="mt-3 ml-3 pl-3 border-l" style={{ borderColor: C.line }}>
-                              <label className="text-xs font-mono2 uppercase tracking-wide block mb-1.5" style={{ color: C.paintDim }}>{q.followUp.text}</label>
-                              <input value={form.customAnswers[followUpKey] || ''} onChange={e => setCustomAnswer(followUpKey, e.target.value)} className="w-full rounded-lg px-4 py-3 border" style={{ background: C.panel, borderColor: C.line, color: C.paint }} />
+                          {followUp && (
+                            <div key={followUp.onAnswer} className="mt-3 ml-3 pl-3 border-l rise" style={{ borderColor: C.rim }}>
+                              <label className="text-xs font-mono2 uppercase tracking-wide block mb-1.5" style={{ color: C.paintDim }}>{followUp.text}</label>
+                              {followUp.type === 'choice' ? (
+                                <TilePicker options={followUp.choices.map(c => ({ value: c, label: c }))} value={form.customAnswers[followUpKey]} onChange={v => setCustomAnswer(followUpKey, v)} columns={2} />
+                              ) : (
+                                <input value={form.customAnswers[followUpKey] || ''} onChange={e => setCustomAnswer(followUpKey, e.target.value)} className="w-full rounded-lg px-4 py-3 border" style={{ background: C.panel, borderColor: C.line, color: C.paint }} />
+                              )}
                             </div>
                           )}
                         </div>
@@ -993,11 +1106,11 @@ function SignupFlow({ openEvents, initialEventId, onSubmit, onCancel, submitting
               <ChevronLeft size={16} /> {step === 0 ? 'Cancel' : 'Back'}
             </button>
             {step < 2 ? (
-              <button disabled={!canProceed()} onClick={() => setStep(s => s + 1)} className="flex items-center gap-1.5 text-sm font-semibold px-5 py-2.5 rounded-lg disabled:opacity-40 transition" style={{ background: C.rim, color: C.paint }}>
+              <button disabled={!canProceed()} onClick={() => setStep(s => s + 1)} className="flex items-center gap-1.5 text-sm font-semibold px-5 py-2.5 rounded-lg disabled:opacity-40 transition" style={{ background: C.rim, color: C.onRim }}>
                 Next <ChevronRight size={16} />
               </button>
             ) : (
-              <button disabled={!canProceed() || submitting} onClick={handleSubmit} className="flex items-center gap-1.5 text-sm font-semibold px-5 py-2.5 rounded-lg disabled:opacity-40 transition" style={{ background: C.rim, color: C.paint }}>
+              <button disabled={!canProceed() || submitting} onClick={handleSubmit} className="flex items-center gap-1.5 text-sm font-semibold px-5 py-2.5 rounded-lg disabled:opacity-40 transition" style={{ background: C.rim, color: C.onRim }}>
                 {submitting ? <Loader2 size={16} className="animate-spin" /> : <Check size={16} />} Submit My Card
               </button>
             )}
@@ -1040,7 +1153,7 @@ function HandlerAuth({ onLogin, busy }) {
           </button>
         </div>
         {error && <div className="text-sm flex items-center gap-1.5" style={{ color: C.foul }}><AlertCircle size={14} />{error}</div>}
-        <button onClick={submit} disabled={busy} className="w-full rounded-lg py-3 font-semibold flex items-center justify-center gap-2 disabled:opacity-60" style={{ background: C.rim, color: C.paint }}>
+        <button onClick={submit} disabled={busy} className="w-full rounded-lg py-3 font-semibold flex items-center justify-center gap-2 disabled:opacity-60" style={{ background: C.rim, color: C.onRim }}>
           {busy ? <Loader2 size={16} className="animate-spin" /> : <LogIn size={16} />}
           Log In
         </button>
@@ -1050,33 +1163,151 @@ function HandlerAuth({ onLogin, busy }) {
 }
 
 /* ============ EVENT FORM (CREATE / EDIT) ============ */
+/* ============ QUESTION BUILDER PARTS ============ */
+
+/* Add/remove the answer options for a multiple-choice question. */
+function ChoiceListEditor({ choices, onAdd, onRemove, placeholder }) {
+  const [draft, setDraft] = useState('');
+  const commit = () => {
+    const v = draft.trim();
+    if (!v || choices.includes(v)) { setDraft(''); return; }
+    onAdd(v);
+    setDraft('');
+  };
+  return (
+    <div className="space-y-1.5">
+      {choices.length === 0 && (
+        <div className="text-xs" style={{ color: C.paintDim }}>No answers yet — add at least two.</div>
+      )}
+      <div className="flex gap-2">
+        <input value={draft} onChange={e => setDraft(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); commit(); } }}
+          placeholder={placeholder} className="flex-1 rounded-lg px-3 py-2 border text-sm"
+          style={{ background: C.panel, borderColor: C.line, color: C.paint }} />
+        <button type="button" onClick={commit} disabled={!draft.trim()}
+          className="px-3 rounded-lg border text-sm disabled:opacity-40"
+          style={{ borderColor: C.line, color: C.paint }}>Add</button>
+      </div>
+    </div>
+  );
+}
+
+/* The follow-up attached to one specific answer: its question, whether the
+   player types or picks, and — if they pick — the options they can pick from. */
+function FollowUpEditor({ followUp, onChange, onRemove }) {
+  return (
+    <div className="mt-2 rounded-lg p-2.5 space-y-2 border-l-2" style={{ background: C.panel, borderColor: C.rim }}>
+      <div className="flex items-center gap-2">
+        <span className="text-xs font-mono2 uppercase tracking-wide flex-1" style={{ color: C.rim }}>Then ask</span>
+        <button type="button" onClick={onRemove} style={{ color: C.paintDim }} aria-label="Remove follow-up"><X size={13} /></button>
+      </div>
+      <input value={followUp.text} onChange={e => onChange({ ...followUp, text: e.target.value })}
+        placeholder="e.g. Which player do you want?" className="w-full rounded-lg px-3 py-2 border text-sm"
+        style={{ background: C.inkSoft, borderColor: C.line, color: C.paint }} />
+      <div className="flex gap-2">
+        {[{ v: 'text', l: 'They type it' }, { v: 'choice', l: 'They pick one' }].map(o => (
+          <button key={o.v} type="button" onClick={() => onChange({ ...followUp, type: o.v })}
+            className="flex-1 py-1.5 rounded-lg text-xs border"
+            style={{ borderColor: followUp.type === o.v ? C.rim : C.line, background: followUp.type === o.v ? 'rgba(229,38,44,0.08)' : 'transparent', color: C.paint }}>
+            {o.l}
+          </button>
+        ))}
+      </div>
+      {followUp.type === 'choice' && (
+        <div className="space-y-1.5">
+          {followUp.choices.length > 0 && (
+            <div className="flex flex-wrap gap-1.5">
+              {followUp.choices.map(c => (
+                <span key={c} className="text-xs px-2 py-1 rounded-full flex items-center gap-1.5" style={{ background: C.inkSoft, color: C.paint }}>
+                  {c}
+                  <button type="button" onClick={() => onChange({ ...followUp, choices: followUp.choices.filter(x => x !== c) })} style={{ color: C.paintDim }}><X size={11} /></button>
+                </span>
+              ))}
+            </div>
+          )}
+          <ChoiceListEditor
+            choices={followUp.choices}
+            onAdd={(v) => onChange({ ...followUp, choices: [...followUp.choices, v] })}
+            placeholder="Add an option they can pick"
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* One answer row in the composer: the answer itself, plus the follow-up it
+   opens. Yes/No answers are fixed, so they can't be renamed or removed. */
+function AnswerRow({ answer, fixed, onRemove, onFollowUpChange }) {
+  return (
+    <div className="rounded-lg p-2.5" style={{ background: C.hardwoodSoft }}>
+      <div className="flex items-center gap-2">
+        <span className="text-sm flex-1 font-semibold" style={{ color: C.paint }}>{answer.label || answer.value}</span>
+        {!answer.followUp && (
+          <button type="button" onClick={() => onFollowUpChange({ text: '', type: 'text', choices: [] })}
+            className="text-xs flex items-center gap-1" style={{ color: C.rim }}>
+            <Plus size={12} />Follow-up
+          </button>
+        )}
+        {!fixed && <button type="button" onClick={onRemove} style={{ color: C.paintDim }} aria-label="Remove answer"><X size={14} /></button>}
+      </div>
+      {answer.followUp && (
+        <FollowUpEditor
+          followUp={answer.followUp}
+          onChange={onFollowUpChange}
+          onRemove={() => onFollowUpChange(null)}
+        />
+      )}
+    </div>
+  );
+}
+
 function EventForm({ initial, onSave, onCancel, busy }) {
   const [f, setF] = useState(initial || { title: '', date: '', time: '', location: '', capacity: '', description: '', photo: '', questions: [], askPosition: true, askPlaystyle: true });
   const [newQText, setNewQText] = useState('');
   const [newQType, setNewQType] = useState('text');
-  const [newQFollowUp, setNewQFollowUp] = useState(false);
-  const [newQFollowUpText, setNewQFollowUpText] = useState('');
-  const [newQFollowUpOn, setNewQFollowUpOn] = useState('yes');
+  /* One row per possible answer: { value, label, followUp }. Yes/No fills this
+     in automatically; multiple choice lets the handler build it up. Text
+     questions have no answers to branch on, so it stays empty. */
+  const [newQAnswers, setNewQAnswers] = useState([]);
   const [photoError, setPhotoError] = useState('');
   const [photoLoading, setPhotoLoading] = useState(false);
   const fileInputRef = useRef(null);
   const set = (k, v) => setF(s => ({ ...s, [k]: v }));
   const valid = f.title.trim() && f.date;
-  const questions = f.questions || [];
+  const questions = normalizeQuestions(f.questions);
+
+  const YES_NO = [
+    { value: 'yes', label: 'Yes', followUp: null },
+    { value: 'no', label: 'No', followUp: null },
+  ];
+  const pickType = (t) => {
+    setNewQType(t);
+    setNewQAnswers(t === 'yesno' ? YES_NO : []);
+  };
+  const setAnswerFollowUp = (i, followUp) =>
+    setNewQAnswers(list => list.map((a, idx) => (idx === i ? { ...a, followUp } : a)));
+
+  const canAddQuestion = newQText.trim() && (newQType !== 'choice' || newQAnswers.length >= 2);
 
   const addQuestion = () => {
-    const text = newQText.trim();
-    if (!text) return;
+    if (!canAddQuestion) return;
     const q = {
       id: uid(),
-      text,
+      text: newQText.trim(),
       type: newQType,
-      followUp: (newQType === 'yesno' && newQFollowUp && newQFollowUpText.trim())
-        ? { onAnswer: newQFollowUpOn, text: newQFollowUpText.trim() }
-        : null,
+      choices: newQType === 'choice' ? newQAnswers.map(a => a.value) : [],
+      followUps: newQAnswers
+        .filter(a => a.followUp && a.followUp.text.trim())
+        .map(a => ({
+          onAnswer: a.value,
+          text: a.followUp.text.trim(),
+          type: a.followUp.type,
+          choices: a.followUp.type === 'choice' ? a.followUp.choices : [],
+        })),
     };
     set('questions', [...questions, q]);
-    setNewQText(''); setNewQType('text'); setNewQFollowUp(false); setNewQFollowUpText(''); setNewQFollowUpOn('yes');
+    setNewQText(''); setNewQType('text'); setNewQAnswers([]);
   };
   const removeQuestion = (i) => set('questions', questions.filter((_, idx) => idx !== i));
 
@@ -1097,7 +1328,7 @@ function EventForm({ initial, onSave, onCancel, busy }) {
   };
 
   return (
-    <div className="rounded-xl border p-5 space-y-4" style={{ borderColor: C.line, background: C.panel }}>
+    <div className="rounded-xl border p-5 space-y-4" style={{ borderColor: C.line, background: C.panel, boxShadow: C.shadow }}>
       <div>
         <label className="text-xs font-mono2 uppercase tracking-wide block mb-1.5" style={{ color: C.paintDim }}>Event Photo</label>
         <div className="max-w-sm">
@@ -1107,7 +1338,7 @@ function EventForm({ initial, onSave, onCancel, busy }) {
         </div>
         <div className="text-xs mt-1.5" style={{ color: C.paintDim }}>This is what players tap to sign up — make it count.</div>
       </div>
-      <div className="grid sm:grid-cols-2 gap-4">
+      <div className="stagger grid sm:grid-cols-2 gap-4">
         <div className="sm:col-span-2">
           <label className="text-xs font-mono2 uppercase tracking-wide block mb-1.5" style={{ color: C.paintDim }}>Event Title</label>
           <input value={f.title} onChange={e => set('title', e.target.value)} placeholder="Friday Night Runs" className="w-full rounded-lg px-3 py-2.5 border" style={{ background: C.inkSoft, borderColor: C.line, color: C.paint }} />
@@ -1146,52 +1377,77 @@ function EventForm({ initial, onSave, onCancel, busy }) {
       </div>
       <div>
         <label className="text-xs font-mono2 uppercase tracking-wide block mb-1.5" style={{ color: C.paintDim }}>Signup Questions (optional)</label>
-        <div className="text-xs mb-2" style={{ color: C.paintDim }}>Add anything else you want to ask players when they sign up for this event. Yes/No questions can reveal a follow-up question based on the answer.</div>
+        <div className="text-xs mb-2" style={{ color: C.paintDim }}>Ask players anything else you need for this event. Yes/No and multiple-choice answers can each open a different follow-up question — pick a team, then pick from that team's players.</div>
         {questions.length > 0 && (
           <div className="space-y-2 mb-3">
             {questions.map((q, i) => (
               <div key={q.id} className="rounded-lg px-3 py-2" style={{ background: C.inkSoft }}>
                 <div className="flex items-center gap-2">
                   <span className="text-sm flex-1" style={{ color: C.paint }}>{q.text}</span>
-                  <span className="text-xs font-mono2 uppercase" style={{ color: C.paintDim }}>{q.type === 'yesno' ? 'Yes/No' : 'Text'}</span>
-                  <button type="button" onClick={() => removeQuestion(i)} style={{ color: C.paintDim }}><X size={14} /></button>
+                  <span className="text-xs font-mono2 uppercase" style={{ color: C.paintDim }}>
+                    {q.type === 'yesno' ? 'Yes/No' : q.type === 'choice' ? 'Choice' : 'Text'}
+                  </span>
+                  <button type="button" onClick={() => removeQuestion(i)} style={{ color: C.paintDim }} aria-label="Remove question"><X size={14} /></button>
                 </div>
-                {q.followUp && (
-                  <div className="mt-1.5 ml-3 pl-3 border-l text-xs" style={{ borderColor: C.line, color: C.paintDim }}>
-                    If <span style={{ color: C.rim }}>{q.followUp.onAnswer === 'yes' ? 'Yes' : 'No'}</span> → {q.followUp.text}
+                {q.choices.length > 0 && (
+                  <div className="flex flex-wrap gap-1 mt-1.5">
+                    {q.choices.map(c => (
+                      <span key={c} className="text-xs px-1.5 py-0.5 rounded" style={{ background: C.hardwoodSoft, color: C.paintDim }}>{c}</span>
+                    ))}
                   </div>
                 )}
+                {q.followUps.map(fu => (
+                  <div key={fu.onAnswer} className="mt-1.5 ml-3 pl-3 border-l text-xs" style={{ borderColor: C.line, color: C.paintDim }}>
+                    If <span style={{ color: C.rim }}>{fu.onAnswer === 'yes' ? 'Yes' : fu.onAnswer === 'no' ? 'No' : fu.onAnswer}</span> → {fu.text}
+                    {fu.type === 'choice' && fu.choices.length > 0 && (
+                      <span> ({fu.choices.join(', ')})</span>
+                    )}
+                  </div>
+                ))}
               </div>
             ))}
           </div>
         )}
         <div className="rounded-lg p-3 space-y-2" style={{ background: C.inkSoft }}>
-          <input value={newQText} onChange={e => setNewQText(e.target.value)} placeholder="e.g. Do you have a mic for VC?" className="w-full rounded-lg px-3 py-2.5 border" style={{ background: C.panel, borderColor: C.line, color: C.paint }} />
-          <div className="flex gap-2">
-            <button type="button" onClick={() => setNewQType('text')} className="flex-1 py-2 rounded-lg text-sm border" style={{ borderColor: newQType === 'text' ? C.rim : C.line, background: newQType === 'text' ? 'rgba(229,38,44,0.1)' : 'transparent', color: C.paint }}>Text Answer</button>
-            <button type="button" onClick={() => setNewQType('yesno')} className="flex-1 py-2 rounded-lg text-sm border" style={{ borderColor: newQType === 'yesno' ? C.rim : C.line, background: newQType === 'yesno' ? 'rgba(229,38,44,0.1)' : 'transparent', color: C.paint }}>Yes/No</button>
-          </div>
-          {newQType === 'yesno' && (
-            <div className="pt-1">
-              <button type="button" onClick={() => setNewQFollowUp(v => !v)} className="flex items-center gap-1.5 text-xs" style={{ color: newQFollowUp ? C.rim : C.paintDim }}>
-                {newQFollowUp ? <Check size={13} /> : <Plus size={13} />} Ask a follow-up based on the answer
+          <input value={newQText} onChange={e => setNewQText(e.target.value)} placeholder="e.g. Which team are you signing up for?" className="w-full rounded-lg px-3 py-2.5 border" style={{ background: C.panel, borderColor: C.line, color: C.paint }} />
+          <div className="grid grid-cols-3 gap-2">
+            {[{ v: 'text', l: 'Text' }, { v: 'yesno', l: 'Yes/No' }, { v: 'choice', l: 'Choices' }].map(o => (
+              <button key={o.v} type="button" onClick={() => pickType(o.v)} className="py-2 rounded-lg text-sm border transition"
+                style={{ borderColor: newQType === o.v ? C.rim : C.line, background: newQType === o.v ? 'rgba(229,38,44,0.08)' : 'transparent', color: C.paint }}>
+                {o.l}
               </button>
-              {newQFollowUp && (
-                <div className="mt-2 space-y-2 pl-3 border-l" style={{ borderColor: C.line }}>
-                  <div className="flex gap-2">
-                    <button type="button" onClick={() => setNewQFollowUpOn('yes')} className="flex-1 py-1.5 rounded-lg text-xs border" style={{ borderColor: newQFollowUpOn === 'yes' ? C.rim : C.line, color: C.paint }}>If Yes</button>
-                    <button type="button" onClick={() => setNewQFollowUpOn('no')} className="flex-1 py-1.5 rounded-lg text-xs border" style={{ borderColor: newQFollowUpOn === 'no' ? C.rim : C.line, color: C.paint }}>If No</button>
-                  </div>
-                  <input value={newQFollowUpText} onChange={e => setNewQFollowUpText(e.target.value)} placeholder="Follow-up question" className="w-full rounded-lg px-3 py-2 border text-sm" style={{ background: C.panel, borderColor: C.line, color: C.paint }} />
-                </div>
+            ))}
+          </div>
+
+          {newQType !== 'text' && (
+            <div className="pt-1 space-y-2">
+              <div className="text-xs font-mono2 uppercase tracking-wide" style={{ color: C.paintDim }}>
+                {newQType === 'yesno' ? 'Answers' : `Answers (${newQAnswers.length})`}
+              </div>
+              {newQAnswers.map((a, i) => (
+                <AnswerRow
+                  key={a.value}
+                  answer={a}
+                  fixed={newQType === 'yesno'}
+                  onRemove={() => setNewQAnswers(list => list.filter((_, idx) => idx !== i))}
+                  onFollowUpChange={(fu) => setAnswerFollowUp(i, fu)}
+                />
+              ))}
+              {newQType === 'choice' && (
+                <ChoiceListEditor
+                  choices={newQAnswers.map(a => a.value)}
+                  onAdd={(v) => setNewQAnswers(list => [...list, { value: v, followUp: null }])}
+                  placeholder="Add an answer, e.g. Lakers"
+                />
               )}
             </div>
           )}
-          <button type="button" onClick={addQuestion} className="w-full py-2 rounded-lg border flex items-center justify-center gap-1 text-sm" style={{ borderColor: C.line, color: C.paint }}><Plus size={14} />Add Question</button>
+
+          <button type="button" onClick={addQuestion} disabled={!canAddQuestion} className="w-full py-2 rounded-lg border flex items-center justify-center gap-1 text-sm disabled:opacity-40" style={{ borderColor: C.line, color: C.paint }}><Plus size={14} />Add Question</button>
         </div>
       </div>
       <div className="flex gap-3">
-        <button disabled={!valid || busy} onClick={() => onSave(f)} className="px-4 py-2.5 rounded-lg font-semibold text-sm disabled:opacity-40 flex items-center gap-2" style={{ background: C.rim, color: C.paint }}>
+        <button disabled={!valid || busy} onClick={() => onSave(f)} className="px-4 py-2.5 rounded-lg font-semibold text-sm disabled:opacity-40 flex items-center gap-2" style={{ background: C.rim, color: C.onRim }}>
           {busy && <Loader2 size={14} className="animate-spin" />} Save Event
         </button>
         <button onClick={onCancel} className="px-4 py-2.5 rounded-lg text-sm" style={{ color: C.paintDim }}>Cancel</button>
@@ -1239,7 +1495,7 @@ function ApplicantDetail({ applicant, event, index, total, onPrev, onNext, onAcc
   const teamName = findTeamName(event, applicant.id);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center sm:p-4" style={{ background: 'rgba(15,8,8,0.88)' }}
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center sm:p-4" style={{ background: 'rgba(20,21,28,0.42)' }}
       onClick={onClose}>
       <div onClick={e => e.stopPropagation()} role="dialog" aria-modal="true" aria-label="Application detail"
         className="w-full sm:max-w-lg rounded-t-2xl sm:rounded-xl border flex flex-col"
@@ -1333,7 +1589,7 @@ function ApplicantDetail({ applicant, event, index, total, onPrev, onNext, onAcc
               <button onClick={() => onReject(applicant.id)} className="flex-1 py-3 rounded-xl border flex items-center justify-center gap-2 font-semibold text-sm uppercase tracking-wide" style={{ borderColor: C.foul, color: C.foul }}>
                 <X size={16} />Pass
               </button>
-              <button onClick={() => onAccept(applicant.id)} className="flex-1 py-3 rounded-xl flex items-center justify-center gap-2 font-semibold text-sm uppercase tracking-wide" style={{ background: C.rim, color: C.paint }}>
+              <button onClick={() => onAccept(applicant.id)} className="flex-1 py-3 rounded-xl flex items-center justify-center gap-2 font-semibold text-sm uppercase tracking-wide" style={{ background: C.rim, color: C.onRim }}>
                 <Check size={16} />Accept
               </button>
             </div>
@@ -1366,19 +1622,19 @@ function ApplicantReviewMode({ applicants, questions, onAccept, onReject, onExit
 
   if (!current) {
     return (
-      <div className="rounded-xl border p-8 text-center" style={{ borderColor: C.line, background: C.panel }}>
+      <div className="rounded-xl border p-8 text-center" style={{ borderColor: C.line, background: C.panel, boxShadow: C.shadow }}>
         <div className="inline-flex items-center justify-center w-14 h-14 rounded-full mb-4" style={{ background: 'rgba(229,38,44,0.15)' }}>
           <Trophy size={24} color={C.rim} />
         </div>
         <div className="font-display text-xl uppercase mb-1" style={{ color: C.paint }}>All Caught Up</div>
         <p className="text-sm mb-5" style={{ color: C.paintDim }}>You've reviewed everyone in the queue.</p>
-        <button onClick={onExit} className="px-5 py-2.5 rounded-lg font-semibold text-sm" style={{ background: C.rim, color: C.paint }}>Back To Event</button>
+        <button onClick={onExit} className="px-5 py-2.5 rounded-lg font-semibold text-sm" style={{ background: C.rim, color: C.onRim }}>Back To Event</button>
       </div>
     );
   }
 
   return (
-    <div className="rounded-xl border p-4 sm:p-6" style={{ borderColor: C.line, background: C.panel }}>
+    <div className="rounded-xl border p-4 sm:p-6" style={{ borderColor: C.line, background: C.panel, boxShadow: C.shadow }}>
       <div className="flex items-center justify-between mb-5">
         <button onClick={onExit} className="flex items-center gap-1.5 text-sm" style={{ color: C.paintDim }}><ArrowLeft size={14} />Exit</button>
         <div className="text-xs font-mono2 uppercase tracking-wide" style={{ color: C.paintDim }}>{Math.min(index + 1, applicants.length)} of {applicants.length}</div>
@@ -1398,7 +1654,7 @@ function ApplicantReviewMode({ applicants, questions, onAccept, onReject, onExit
           <X size={22} />
           <span className="text-xs font-semibold uppercase tracking-wide">Pass</span>
         </button>
-        <button onClick={() => onAccept(current.id)} className="flex-1 py-4 rounded-xl flex flex-col items-center gap-1.5 transition hover:-translate-y-0.5" style={{ background: C.rim, color: C.paint }}>
+        <button onClick={() => onAccept(current.id)} className="flex-1 py-4 rounded-xl flex flex-col items-center gap-1.5 transition hover:-translate-y-0.5" style={{ background: C.rim, color: C.onRim }}>
           <Check size={22} />
           <span className="text-xs font-semibold uppercase tracking-wide">Accept</span>
         </button>
@@ -1453,7 +1709,7 @@ function EventManagerRow({ event, applicants, accepted, rejected, signupsById, o
   }
 
   return (
-    <div className="rounded-xl border overflow-hidden" style={{ borderColor: C.line, background: C.panel }}>
+    <div className="rounded-xl border overflow-hidden lift" style={{ borderColor: C.line, background: C.panel, boxShadow: C.shadow }}>
       <div className="p-4 sm:p-5 flex items-center gap-4 cursor-pointer" onClick={() => setExpanded(e => !e)}>
         <div className="rounded-lg px-3 py-2 text-center font-mono2 shrink-0" style={{ background: C.hardwoodSoft }}>
           <div className="text-lg font-bold leading-none" style={{ color: C.rim }}>{parts.day}</div>
@@ -1499,12 +1755,12 @@ function EventManagerRow({ event, applicants, accepted, rejected, signupsById, o
             ) : reviewMode ? (
               <ApplicantReviewMode applicants={applicants} questions={event.questions || []} onAccept={onAccept} onReject={onReject} onExit={() => setReviewMode(false)} onOpenDetail={(id) => setDetail({ list: 'applicants', id })} />
             ) : (
-              <div className="space-y-2">
+              <div className="stagger space-y-2">
                 {applicants.map(a => (
                   <PlayerCard key={a.id} data={a} compact questions={event.questions || []} onOpen={() => setDetail({ list: 'applicants', id: a.id })} actions={
                     <div className="flex gap-1.5 shrink-0">
                       <button onClick={() => onAccept(a.id)} className="p-2 rounded-lg" style={{ background: 'rgba(229,38,44,0.15)', color: C.rim }} title="Accept"><Check size={15} /></button>
-                      <button onClick={() => onReject(a.id)} className="p-2 rounded-lg" style={{ background: 'rgba(179,48,48,0.15)', color: C.foul }} title="Pass"><X size={15} /></button>
+                      <button onClick={() => onReject(a.id)} className="p-2 rounded-lg" style={{ background: 'rgba(196,35,46,0.10)', color: C.foul }} title="Pass"><X size={15} /></button>
                     </div>
                   } />
                 ))}
@@ -1517,7 +1773,7 @@ function EventManagerRow({ event, applicants, accepted, rejected, signupsById, o
             {accepted.length === 0 ? (
               <div className="text-sm" style={{ color: C.paintDim }}>No one's been accepted yet.</div>
             ) : (
-              <div className="space-y-2">
+              <div className="stagger space-y-2">
                 {accepted.map(a => (
                   <PlayerCard key={a.id} data={a} compact questions={event.questions || []} onOpen={() => setDetail({ list: 'accepted', id: a.id })} actions={
                     <button onClick={() => onReconsider(a.id)} className="text-xs px-2.5 py-1.5 rounded-lg shrink-0" style={{ color: C.paintDim }}>Remove</button>
@@ -1530,7 +1786,7 @@ function EventManagerRow({ event, applicants, accepted, rejected, signupsById, o
           {rejected.length > 0 && (
             <div>
               <div className="text-xs font-mono2 uppercase tracking-wide mb-3" style={{ color: C.paintDim }}>Passed On ({rejected.length})</div>
-              <div className="space-y-2">
+              <div className="stagger space-y-2">
                 {rejected.map(a => (
                   <PlayerCard key={a.id} data={a} compact questions={event.questions || []} onOpen={() => setDetail({ list: 'rejected', id: a.id })} actions={
                     <button onClick={() => onReconsider(a.id)} className="text-xs flex items-center gap-1 px-2.5 py-1.5 rounded-lg shrink-0" style={{ color: C.paintDim }}><RefreshCw size={11} />Reconsider</button>
@@ -1546,7 +1802,7 @@ function EventManagerRow({ event, applicants, accepted, rejected, signupsById, o
               <div className="flex items-center gap-2">
                 <label className="text-xs" style={{ color: C.paintDim }}>Teams</label>
                 <input type="number" min={2} max={Math.max(2, accepted.length)} value={numTeams} onChange={e => setNumTeams(Number(e.target.value))} className="w-16 rounded-lg px-2 py-1.5 border text-sm" style={{ background: C.inkSoft, borderColor: C.line, color: C.paint }} />
-                <button disabled={accepted.length < 2 || assigning} onClick={() => onAssignTeams(event.id, numTeams)} className="text-xs font-semibold px-3 py-1.5 rounded-lg disabled:opacity-40 flex items-center gap-1.5" style={{ background: C.rim, color: C.paint }}>
+                <button disabled={accepted.length < 2 || assigning} onClick={() => onAssignTeams(event.id, numTeams)} className="text-xs font-semibold px-3 py-1.5 rounded-lg disabled:opacity-40 flex items-center gap-1.5" style={{ background: C.rim, color: C.onRim }}>
                   {assigning ? <Loader2 size={13} className="animate-spin" /> : <Shuffle size={13} />}
                   {event.teams ? 'Re-Assign' : 'Assign Teams'}
                 </button>
@@ -1628,7 +1884,7 @@ function HandlerDashboard({ session, events, signups, onLogout, onCreateEvent, o
           <EventForm onSave={(f) => { onCreateEvent(f); setShowCreate(false); }} onCancel={() => setShowCreate(false)} busy={creatingEvent} />
         </div>
       ) : (
-        <button onClick={() => setShowCreate(true)} className="mb-8 flex items-center gap-2 text-sm font-semibold px-4 py-3 rounded-lg" style={{ background: C.rim, color: C.paint }}>
+        <button onClick={() => setShowCreate(true)} className="mb-8 flex items-center gap-2 text-sm font-semibold px-4 py-3 rounded-lg" style={{ background: C.rim, color: C.onRim }}>
           <Plus size={16} /> New Event
         </button>
       )}
@@ -1884,16 +2140,20 @@ function App() {
 
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center" style={{ background: C.ink }}>
+      <div className="min-h-screen flex items-center justify-center relative">
         <GlobalStyles />
-        <Loader2 size={28} className="animate-spin" color={C.rim} />
+        <AmbientCourt />
+        <Loader2 size={28} className="animate-spin relative z-10" color={C.rim} />
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen font-body" style={{ background: C.ink }}>
+    <div className="min-h-screen font-body relative">
       <GlobalStyles />
+      <AmbientCourt />
+      {/* everything above the court field */}
+      <div className="relative" style={{ zIndex: 1 }}>
       {!REMOTE_ENABLED && (
         <div className="text-xs font-mono2 text-center py-2 px-4" style={{ background: C.hardwoodSoft, color: C.paintDim }}>
           Demo mode — events and signups save to this browser only. See README.md to connect shared storage.
@@ -1937,6 +2197,7 @@ function App() {
         )}
       </main>
       <Footer />
+      </div>
     </div>
   );
 }
